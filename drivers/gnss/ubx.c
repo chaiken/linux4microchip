@@ -33,7 +33,7 @@ const size_t FIRST_VALUE_BYTE = 14U;
 const size_t FIRST_CHECKSUM_BYTE = 18U;
 const size_t CFG_MSG_TOTAL_LEN = 20U;
 
-uint8_t ZED_F9P_CFG_VALSET_MSG[] = {
+uint8_t ZED_F9_CFG_VALSET_MSG[] = {
 	0xB5, 0x62, /* 0-1 preamble */
 	0x06, 0x8A, /* 2-3 CFG_VALSET command */
 	0x0C, 0x00, /* 4-5 payload length = 12 for one key-value pair */
@@ -92,8 +92,7 @@ static int32_t get_msg_total_len(const uint8_t msg[])
 }
 
 /* The checksum is calculated on message class, message ID, message length and
- *  payload.  See
- *  https://portal.u-blox.com/s/question/0D52p00008HKDqnCAH/calculating-ubx-checksum-correctly-in-python
+ * payload.
  */
 static void calc_ubx_checksum(const uint8_t msg[], uint8_t checksum[],
 			   const uint16_t total_len)
@@ -120,14 +119,14 @@ static uint32_t  check_baud(speed_t speed, const struct device *dev,
 	return speed;
 }
 
-static int prepare_zedf9p_config_msg(const speed_t speed,
+static int prepare_zedf9_config_msg(const speed_t speed,
 					const struct device *dev,
 					    const struct ubx_features *features)
 {
 	union int_to_bytes cfg_val, cfg_register;
 	int i = 0;
 	uint8_t checksum[2];
-	const size_t total_len = get_msg_total_len(ZED_F9P_CFG_VALSET_MSG);
+	const size_t total_len = get_msg_total_len(ZED_F9_CFG_VALSET_MSG);
 
 	if (total_len != CFG_MSG_TOTAL_LEN)
 		goto bad_msg;
@@ -135,12 +134,12 @@ static int prepare_zedf9p_config_msg(const speed_t speed,
 	cfg_val.int_val = check_baud(speed, dev, features);
 	cfg_register.int_val = features->baud_config_reg;
 	for (i = 0; i < 4; i++) {
-		ZED_F9P_CFG_VALSET_MSG[FIRST_VALUE_BYTE + i] = cfg_val.bytes[i];
-		ZED_F9P_CFG_VALSET_MSG[FIRST_CONFIG_REGISTER_BYTE + i] = cfg_register.bytes[i];
+		ZED_F9_CFG_VALSET_MSG[FIRST_VALUE_BYTE + i] = cfg_val.bytes[i];
+		ZED_F9_CFG_VALSET_MSG[FIRST_CONFIG_REGISTER_BYTE + i] = cfg_register.bytes[i];
 	}
-	calc_ubx_checksum(ZED_F9P_CFG_VALSET_MSG, checksum, total_len);
-	ZED_F9P_CFG_VALSET_MSG[FIRST_CHECKSUM_BYTE] = checksum[0];
-	ZED_F9P_CFG_VALSET_MSG[FIRST_CHECKSUM_BYTE + 1U] = checksum[1];
+	calc_ubx_checksum(ZED_F9_CFG_VALSET_MSG, checksum, total_len);
+	ZED_F9_CFG_VALSET_MSG[FIRST_CHECKSUM_BYTE] = checksum[0];
+	ZED_F9_CFG_VALSET_MSG[FIRST_CHECKSUM_BYTE + 1U] = checksum[1];
 	return 0;
 
  bad_msg:
@@ -148,8 +147,8 @@ static int prepare_zedf9p_config_msg(const speed_t speed,
 	return -EINVAL;
 }
 
-/* Configure the Zed F9P baud rate via the UBX-CFG-VALSET message. */
-static int set_zedf9p_baud(struct gnss_device *gdev,
+/* Configure the Zed F9 baud rate via the UBX-CFG-VALSET message. */
+static int set_zedf9_baud(struct gnss_device *gdev,
 					struct serdev_device *serdev, struct gnss_serial *gserial)
 {
 	const struct ubx_data *data = gnss_serial_get_drvdata(gserial);
@@ -162,20 +161,20 @@ static int set_zedf9p_baud(struct gnss_device *gdev,
 	if (gserial->speed == features->default_baud)
 		return 0;
 
-	ret = prepare_zedf9p_config_msg(gserial->speed, &gdev->dev, features);
+	ret = prepare_zedf9_config_msg(gserial->speed, &gdev->dev, features);
 	if (ret)
 		return ret;
 	/* Initially set the UART to the default speed to match the GNSS' power-on value. */
 	serdev_device_set_baudrate(serdev, features->default_baud);
 	/* Now set the new baud rate. */
-	count = gdev->ops->write_raw(gdev, ZED_F9P_CFG_VALSET_MSG, CFG_MSG_TOTAL_LEN);
+	count = gdev->ops->write_raw(gdev, ZED_F9_CFG_VALSET_MSG, CFG_MSG_TOTAL_LEN);
 	if (count != CFG_MSG_TOTAL_LEN)
 		return count;
 
 	return 0;
 }
 
-static int zed_f9p_serial_open(struct gnss_device *gdev)
+static int zed_f9_serial_open(struct gnss_device *gdev)
 {
 	struct gnss_serial *gserial = gnss_get_drvdata(gdev);
 	struct serdev_device *serdev = gserial->serdev;
@@ -193,10 +192,10 @@ static int zed_f9p_serial_open(struct gnss_device *gdev)
 	if (!data->is_configured) {
 		/* 4800 is the default value set by gnss_serial_parse_dt() */
 		if (gserial->speed == 4800) {
-			/* Fall back instead to Zed F9P default */
+			/* Fall back instead to Zed F9 default */
 			gserial->speed = data->features->default_baud;
 		} else {
-			ret = set_zedf9p_baud(gdev, serdev, gserial);
+			ret = set_zedf9_baud(gdev, serdev, gserial);
 			if (ret)
 				return ret;
 		}
@@ -259,12 +258,13 @@ static const struct gnss_serial_ops ubx_gserial_ops = {
 	.set_power = ubx_set_power,
 };
 
-static const struct ubx_features __maybe_unused zedf9p_feats = {
-	.open					=	zed_f9p_serial_open,
-	.baud_config_reg			=	0x40520001,
-	.min_baud				=	9600,
-	.default_baud				=	38400,
-	.max_baud				=	921600,
+
+static const struct ubx_features __maybe_unused zedf9_feats = {
+	.open			=	zed_f9_serial_open,
+	.baud_config_reg	=	0x40520001,
+	.min_baud		=	9600,
+	.default_baud		=	38400,
+	.max_baud		=	921600,
 };
 
 #ifdef CONFIG_OF
@@ -272,7 +272,7 @@ static const struct of_device_id ubx_of_match[] = {
 	{ .compatible = "u-blox,neo-6m" },
 	{ .compatible = "u-blox,neo-8" },
 	{ .compatible = "u-blox,neo-m8" },
-	{ .compatible = "u-blox,zed-f9p", .data = &zedf9p_feats },
+	{ .compatible = "u-blox,zed-f9", .data = &zedf9_feats },
 	{},
 };
 MODULE_DEVICE_TABLE(of, ubx_of_match);
