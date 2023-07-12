@@ -30,24 +30,46 @@ const int32_t MESSAGE_LENGTH_LEN = 2;
 const int32_t CHECKSUM_LEN = 2;
 const size_t FIRST_CONFIG_REGISTER_BYTE = 10U;
 const size_t FIRST_VALUE_BYTE = 14U;
-const size_t FIRST_CHECKSUM_BYTE = 18U;
-const size_t CFG_MSG_TOTAL_LEN = 20U;
+const size_t BAUD_FIRST_CHECKSUM_BYTE = 18U;
+const size_t ANT_FIRST_CHECKSUM_BYTE = 30U;
+const size_t BAUD_MSG_TOTAL_LEN = 20U;
+const size_t NUM_ANT_COMMANDS = 4U;
+const size_t ANT_MSG_TOTAL_LEN = 32U;
 
-uint8_t ZED_F9_CFG_VALSET_MSG[] = {
+uint8_t ZED_F9_BAUD_MSG[] = {
 	0xB5, 0x62, /* 0-1 preamble */
 	0x06, 0x8A, /* 2-3 CFG_VALSET command */
-	0x0C, 0x00, /* 4-5 payload length = 12 for one key-value pair */
+	0x0C, 0x00, /* 4-5 payload length = 12 for one key + int-value */
 	0x00, /* 6 U-Blox API version */
 	0x01, /* 7 Write to RAM */
 	0x00, 0x00, /* 8-9 Reserved */
-	0x00, 0x00, 0x00, 0x00, /* 10-13 Placeholder for configuration register */
+	0x00, 0x00, 0x00, 0x00, /* 10-13 Placeholder for configuration register = key */
 	0x00, 0x00, 0x00, 0x00, /* 14-17 Placeholder for baud value */
 	0x00, 0x00 /* 18-19 Placeholder for checksum */
+};
+
+uint8_t ZED_F9_ANTENNA_MSG[] = {
+	0xB5, 0x62, /* 0-1 preamble */
+	0x06, 0x8A, /* 2-3 CFG_VALSET command */
+	0x18, 0x00, /* 4-5 payload length = 4 + (4 settings * (4B key + 1B value)) */
+	0x00, /* 6 U-Blox API version */
+	0x01, /* 7 Write to RAM */
+	0x00, 0x00, /* 8-9 Reserved */
+	0x00, 0x00, 0x00, 0x00, /* 10-13 Placeholder for configuration register = key */
+	0x00, /* 14 Placeholder for boolean value */
+	0x00, 0x00, 0x00, 0x00, /* 15-18 Placeholder for configuration register = key */
+	0x00, /* 19 Placeholder for boolean value */
+	0x00, 0x00, 0x00, 0x00, /* 20-23 Placeholder for configuration register = key */
+	0x00, /* 24 Placeholder for boolean value */
+	0x00, 0x00, 0x00, 0x00, /* 25-28 Placeholder for configuration register = key */
+	0x00, /* 29 Placeholder for boolean value */
+	0x00, 0x00 /* 30-31 Placeholder for checksum */
 };
 
 struct ubx_features {
 	int (*open)(struct gnss_device *gdev);
 	size_t baud_config_reg;
+	size_t antenna_regs[4U];  /* Size must be kept in sync with NUM_ANT_COMMANDS */
 	u32 min_baud;
 	u32 default_baud;
 	u32 max_baud;
@@ -119,31 +141,69 @@ static uint32_t  check_baud(speed_t speed, const struct device *dev,
 	return speed;
 }
 
-static int prepare_zedf9_config_msg(const speed_t speed,
+static int prepare_zedf9_antenna_msg(const bool state,
+					const struct device *dev,
+					    const struct ubx_features *features)
+{
+	union int_to_bytes cfg_register;
+	int i = 0, j = 0, offset = 0;
+	uint8_t checksum[2];
+	const size_t total_len = get_msg_total_len(ZED_F9_ANTENNA_MSG);
+
+	if (total_len != ANT_MSG_TOTAL_LEN)
+		goto bad_msg;
+
+	if (1 == state){
+		dev_info(dev, "Enabling antenna controls.\n");
+	}
+	if (0 == state){
+		dev_info(dev, "Disabling antenna controls.\n");
+	}
+	for (i = 0; i < (int) NUM_ANT_COMMANDS; i++) {
+		/* 5U = 4 bytes for the key (register) plus 1 byte for the boolean value */
+		offset = i * 5U;
+		ZED_F9_ANTENNA_MSG[FIRST_VALUE_BYTE + offset] = state;
+		cfg_register.int_val = features->antenna_regs[i];
+		for (j = 0; j < sizeof(int); j++) {
+			ZED_F9_ANTENNA_MSG[FIRST_CONFIG_REGISTER_BYTE + offset + j]
+				= cfg_register.bytes[j];
+		}
+	}
+	calc_ubx_checksum(ZED_F9_ANTENNA_MSG, checksum, total_len);
+	ZED_F9_ANTENNA_MSG[ANT_FIRST_CHECKSUM_BYTE] = checksum[0];
+	ZED_F9_ANTENNA_MSG[ANT_FIRST_CHECKSUM_BYTE + 1U] = checksum[1];
+	return 0;
+
+ bad_msg:
+	dev_err(dev, "Malformed UBX antenna-control message\n");
+	return -EINVAL;
+}
+
+static int prepare_zedf9_baud_msg(const speed_t speed,
 					const struct device *dev,
 					    const struct ubx_features *features)
 {
 	union int_to_bytes cfg_val, cfg_register;
 	int i = 0;
 	uint8_t checksum[2];
-	const size_t total_len = get_msg_total_len(ZED_F9_CFG_VALSET_MSG);
+	const size_t total_len = get_msg_total_len(ZED_F9_BAUD_MSG);
 
-	if (total_len != CFG_MSG_TOTAL_LEN)
+	if (total_len != BAUD_MSG_TOTAL_LEN)
 		goto bad_msg;
 
 	cfg_val.int_val = check_baud(speed, dev, features);
 	cfg_register.int_val = features->baud_config_reg;
 	for (i = 0; i < 4; i++) {
-		ZED_F9_CFG_VALSET_MSG[FIRST_VALUE_BYTE + i] = cfg_val.bytes[i];
-		ZED_F9_CFG_VALSET_MSG[FIRST_CONFIG_REGISTER_BYTE + i] = cfg_register.bytes[i];
+		ZED_F9_BAUD_MSG[FIRST_VALUE_BYTE + i] = cfg_val.bytes[i];
+		ZED_F9_BAUD_MSG[FIRST_CONFIG_REGISTER_BYTE + i] = cfg_register.bytes[i];
 	}
-	calc_ubx_checksum(ZED_F9_CFG_VALSET_MSG, checksum, total_len);
-	ZED_F9_CFG_VALSET_MSG[FIRST_CHECKSUM_BYTE] = checksum[0];
-	ZED_F9_CFG_VALSET_MSG[FIRST_CHECKSUM_BYTE + 1U] = checksum[1];
+	calc_ubx_checksum(ZED_F9_BAUD_MSG, checksum, total_len);
+	ZED_F9_BAUD_MSG[BAUD_FIRST_CHECKSUM_BYTE] = checksum[0];
+	ZED_F9_BAUD_MSG[BAUD_FIRST_CHECKSUM_BYTE + 1U] = checksum[1];
 	return 0;
 
  bad_msg:
-	dev_err(dev, "Malformed UBX-CFG-VALSET message\n");
+	dev_err(dev, "Malformed UBX baud-setting message\n");
 	return -EINVAL;
 }
 
@@ -160,48 +220,92 @@ static int set_zedf9_baud(struct gnss_device *gdev,
 		return -EINVAL;
 	if (gserial->speed == features->default_baud)
 		return 0;
-
-	ret = prepare_zedf9_config_msg(gserial->speed, &gdev->dev, features);
+	ret = prepare_zedf9_baud_msg(gserial->speed, &gdev->dev, features);
 	if (ret)
 		return ret;
-	/* Initially set the UART to the default speed to match the GNSS' power-on value. */
-	serdev_device_set_baudrate(serdev, features->default_baud);
 	/* Now set the new baud rate. */
-	count = gdev->ops->write_raw(gdev, ZED_F9_CFG_VALSET_MSG, CFG_MSG_TOTAL_LEN);
-	if (count != CFG_MSG_TOTAL_LEN)
+	count = gdev->ops->write_raw(gdev, ZED_F9_BAUD_MSG, BAUD_MSG_TOTAL_LEN);
+	if (count != BAUD_MSG_TOTAL_LEN) {
+		dev_err(&gdev->dev, "Baud-rate setting failed.");
 		return count;
-
+	}
 	return 0;
 }
+
+/* Enable the Zed F9 antenna voltage control  rate via the UBX-CFG-VALSET message. */
+static int enable_zedf9_antenna_control(struct gnss_device *gdev, struct gnss_serial *gserial)
+{
+	const struct ubx_data *data = gnss_serial_get_drvdata(gserial);
+	const struct ubx_features *features = data->features;
+	size_t count = 0U;
+	int ret;
+
+	if (!data->features)
+		return -EINVAL;
+
+	ret = prepare_zedf9_antenna_msg(true, &gdev->dev, features);
+	if (ret)
+		return ret;
+	count = gdev->ops->write_raw(gdev, ZED_F9_ANTENNA_MSG, ANT_MSG_TOTAL_LEN);
+	if (count != ANT_MSG_TOTAL_LEN) {
+		dev_err(&gdev->dev, "Antenna-control enablement failed.");
+		return count;
+	}
+
+	dev_info(&gdev->dev, "Enabled GNSS antenna controls.\n");
+	return 0;
+}
+
 
 static int zed_f9_serial_open(struct gnss_device *gdev)
 {
 	struct gnss_serial *gserial = gnss_get_drvdata(gdev);
 	struct serdev_device *serdev = gserial->serdev;
 	struct ubx_data *data = gnss_serial_get_drvdata(gserial);
+	const struct ubx_features *features = data->features;
+	speed_t new_baud = 0U;
 	int ret;
 
 	ret = serdev_device_open(serdev);
 	if (ret)
 		return ret;
-	if (!data->features)
+	if (!features)
 		return -EINVAL;
 
 	serdev_device_set_flow_control(serdev, false);
 
 	if (!data->is_configured) {
+		/* Initially set the UART to the default speed to match the GNSS' power-on value. */
+		new_baud = serdev_device_set_baudrate(serdev, features->default_baud);
+		if (features->default_baud != new_baud) {
+		    dev_err(&gdev->dev, "Failed to set serial device to GNSS default baud %u\n",
+			    features->default_baud);
+		}
+
 		/* 4800 is the default value set by gnss_serial_parse_dt() */
 		if (gserial->speed == 4800) {
 			/* Fall back instead to Zed F9 default */
-			gserial->speed = data->features->default_baud;
+			gserial->speed = features->default_baud;
 		} else {
 			ret = set_zedf9_baud(gdev, serdev, gserial);
-			if (ret)
+			if (ret) {
+				dev_err(&gdev->dev, "GNSS speed setting to %u failed\n", gserial->speed);
 				return ret;
+			}
+			new_baud = serdev_device_set_baudrate(serdev, gserial->speed);
+			if (gserial->speed != new_baud) {
+				dev_err(&gdev->dev, "Serial device speed setting to %u failed\n", gserial->speed);
+				return ret;
+			}
+			dev_info(&gdev->dev, "Set GNSS speed to %u\n", gserial->speed);
 		}
+
+		ret = enable_zedf9_antenna_control(gdev, gserial);
+		if (ret)
+			return ret;
+
 		data->is_configured = 1;
 	}
-	serdev_device_set_baudrate(serdev, gserial->speed);
 
 	ret = pm_runtime_get_sync(&serdev->dev);
 	if (ret < 0) {
@@ -260,11 +364,13 @@ static const struct gnss_serial_ops ubx_gserial_ops = {
 
 
 static const struct ubx_features __maybe_unused zedf9_feats = {
-	.open			=	zed_f9_serial_open,
-	.baud_config_reg	=	0x40520001,
-	.min_baud		=	9600,
-	.default_baud		=	38400,
-	.max_baud		=	921600,
+	.open					=	zed_f9_serial_open,
+	.baud_config_reg			=	0x40520001,
+	/* ANT_CFG_VOLTCTRL, ANT_CFG_SHORTDET, ANT_CFG_OPENDET, ANT_CFG_PWRDOWN */
+	.antenna_regs				=	{0x10a3002e, 0x10a3002f, 0x10a30031, 0x10a30033},
+	.min_baud				=	9600,
+	.default_baud				=	38400,
+	.max_baud				=	921600,
 };
 
 #ifdef CONFIG_OF
