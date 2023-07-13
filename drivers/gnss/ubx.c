@@ -32,9 +32,16 @@ const size_t FIRST_CONFIG_REGISTER_BYTE = 10U;
 const size_t FIRST_VALUE_BYTE = 14U;
 const size_t BAUD_FIRST_CHECKSUM_BYTE = 18U;
 const size_t ANT_FIRST_CHECKSUM_BYTE = 30U;
+const size_t PROTOCOL_FIRST_CHECKSUM_BYTE = 20U;
 const size_t BAUD_MSG_TOTAL_LEN = 20U;
 const size_t NUM_ANT_COMMANDS = 4U;
 const size_t ANT_MSG_TOTAL_LEN = 32U;
+const size_t PROTOCOL_MSG_TOTAL_LEN = 22U;
+
+enum gnss_output_protocol {
+	UBX,
+	NMEA,
+};
 
 uint8_t ZED_F9_BAUD_MSG[] = {
 	0xB5, 0x62, /* 0-1 preamble */
@@ -66,13 +73,31 @@ uint8_t ZED_F9_ANTENNA_MSG[] = {
 	0x00, 0x00 /* 30-31 Placeholder for checksum */
 };
 
+/* Set either the NMEA output protocol (default) or the UBX one. */
+uint8_t ZED_F9_PROTOCOL_MSG[] = {
+	0xB5, 0x62, /* 0-1 preamble */
+	0x06, 0x8A, /* 2-3 CFG_VALSET command */
+	0x0E, 0x00, /* 4-5 payload length = 4 + 2 * (4B key + 1B value) */
+	0x00, /* 6 U-Blox API version */
+	0x01, /* 7 Write to RAM */
+	0x00, 0x00, /* 8-9 Reserved */
+	0x00, 0x00, 0x00, 0x00, /* 10-13 Placeholder for configuration register = key */
+	0x00, /* 14 Placeholder for boolean value */
+	0x00, 0x00, 0x00, 0x00, /* 15-18 Placeholder for configuration register = key */
+	0x00, /* 19 Placeholder for boolean value */
+	0x00, 0x00 /* 20-21 Placeholder for checksum */
+};
+
 struct ubx_features {
 	int (*open)(struct gnss_device *gdev);
-	size_t baud_config_reg;
 	size_t antenna_regs[4U];  /* Size must be kept in sync with NUM_ANT_COMMANDS */
+	size_t baud_config_reg;
+	size_t output_ubx_reg;
+	size_t output_nmea_reg;
 	u32 min_baud;
 	u32 default_baud;
 	u32 max_baud;
+	enum gnss_output_protocol protocol;
 };
 
 struct ubx_data {
@@ -139,6 +164,52 @@ static uint32_t  check_baud(speed_t speed, const struct device *dev,
 		speed = features->default_baud;
 	}
 	return speed;
+}
+
+static int prepare_zedf9_gnss_protocol_msg(const enum gnss_output_protocol protocol,
+					const struct device *dev,
+					    const struct ubx_features *features)
+{
+	union int_to_bytes ubx_register, nmea_register;
+	int i = 0;
+	uint8_t checksum[2];
+	const bool protocol_is_ubx = (UBX == protocol);
+	const size_t total_len = get_msg_total_len(ZED_F9_PROTOCOL_MSG);
+	const size_t setting_len = sizeof(int) + sizeof(bool);
+
+	if (total_len != PROTOCOL_MSG_TOTAL_LEN)
+		goto bad_msg;
+
+	/* Support either UBX or NMEA output, so disable one when enabling the other. */
+	if ((UBX != protocol) && (NMEA != protocol)) {
+		dev_err(dev, "Illegal output protocol.");
+		return -EINVAL;
+	}
+	if (protocol_is_ubx){
+		dev_info(dev, "Selecting UBX output protocol.\n");
+	} else {
+		dev_info(dev, "Selecting NMEA output protocol.\n");
+	}
+
+	ZED_F9_PROTOCOL_MSG[FIRST_VALUE_BYTE] = protocol_is_ubx;
+	ZED_F9_PROTOCOL_MSG[FIRST_VALUE_BYTE + setting_len] = !protocol_is_ubx;
+	ubx_register.int_val = features->output_ubx_reg;
+	nmea_register.int_val = features->output_nmea_reg;
+	for (i = 0; i < sizeof(int); i++) {
+		ZED_F9_PROTOCOL_MSG[FIRST_CONFIG_REGISTER_BYTE + i]
+			= ubx_register.bytes[i];
+		ZED_F9_PROTOCOL_MSG[FIRST_CONFIG_REGISTER_BYTE + i + setting_len]
+			= nmea_register.bytes[i];
+	}
+
+	calc_ubx_checksum(ZED_F9_PROTOCOL_MSG, checksum, total_len);
+	ZED_F9_PROTOCOL_MSG[PROTOCOL_FIRST_CHECKSUM_BYTE] = checksum[0];
+	ZED_F9_PROTOCOL_MSG[PROTOCOL_FIRST_CHECKSUM_BYTE + 1U] = checksum[1];
+	return 0;
+
+ bad_msg:
+	dev_err(dev, "Malformed UBX output protocol selection message\n");
+	return -EINVAL;
 }
 
 static int prepare_zedf9_antenna_msg(const bool state,
@@ -256,6 +327,30 @@ static int enable_zedf9_antenna_control(struct gnss_device *gdev, struct gnss_se
 	return 0;
 }
 
+static int set_zedf9_gnss_protocol(struct gnss_device *gdev, struct gnss_serial *gserial) {
+	const struct ubx_data *data = gnss_serial_get_drvdata(gserial);
+	const struct ubx_features *features = data->features;
+	enum gnss_output_protocol protocol;
+	size_t count = 0U;
+	int ret;
+
+	if (!data->features)
+		return -EINVAL;
+	protocol = features->protocol;
+
+	ret = prepare_zedf9_gnss_protocol_msg(protocol, &gdev->dev, features);
+	if (ret)
+		return ret;
+	count = gdev->ops->write_raw(gdev, ZED_F9_PROTOCOL_MSG, PROTOCOL_MSG_TOTAL_LEN);
+	if (count != PROTOCOL_MSG_TOTAL_LEN) {
+		dev_err(&gdev->dev, "Failed to set GNSS protocol to %s\n.", (UBX == protocol) ? "UBX" : "NMEA");
+		return count;
+	}
+
+	dev_info(&gdev->dev, "Set GNSS protocol to %s\n.", (UBX == protocol) ? "UBX" : "NMEA");
+	return 0;
+}
+
 
 static int zed_f9_serial_open(struct gnss_device *gdev)
 {
@@ -301,6 +396,9 @@ static int zed_f9_serial_open(struct gnss_device *gdev)
 		}
 
 		ret = enable_zedf9_antenna_control(gdev, gserial);
+		if (ret)
+			return ret;
+		ret = set_zedf9_gnss_protocol(gdev, gserial);
 		if (ret)
 			return ret;
 
@@ -365,12 +463,16 @@ static const struct gnss_serial_ops ubx_gserial_ops = {
 
 static const struct ubx_features __maybe_unused zedf9_feats = {
 	.open					=	zed_f9_serial_open,
-	.baud_config_reg			=	0x40520001,
 	/* ANT_CFG_VOLTCTRL, ANT_CFG_SHORTDET, ANT_CFG_OPENDET, ANT_CFG_PWRDOWN */
 	.antenna_regs				=	{0x10a3002e, 0x10a3002f, 0x10a30031, 0x10a30033},
+	.baud_config_reg			=	0x40520001,
+	.output_ubx_reg 			=	0x10740001,
+	.output_nmea_reg			=	0x10740002,
 	.min_baud				=	9600,
 	.default_baud				=	38400,
 	.max_baud				=	921600,
+	.max_baud				=	921600,
+	.protocol  	       			=	UBX,
 };
 
 #ifdef CONFIG_OF
