@@ -19,6 +19,7 @@
 #include <linux/regulator/consumer.h>
 #include <linux/serdev.h>
 
+#include "core.h"
 #include "serial.h"
 
 /* Total configuration message length = PREAMBLE_LEN + MESSAGE_CLASS_LEN +
@@ -40,6 +41,7 @@ const size_t ANT_MSG_TOTAL_LEN = 32U;
 const size_t PROTOCOL_MSG_TOTAL_LEN = 47U;
 
 enum gnss_output_protocol {
+	PROTOCOL_NONE,
 	UBX,
 	NMEA,
 };
@@ -118,7 +120,7 @@ struct ubx_features {
 	u32 min_baud;
 	u32 default_baud;
 	u32 max_baud;
-	enum gnss_output_protocol protocol;
+	enum gnss_output_protocol default_protocol;
 };
 
 struct ubx_data {
@@ -126,6 +128,7 @@ struct ubx_data {
 	struct regulator *vcc;
 	const struct ubx_features *features;
 	unsigned long is_configured;
+	enum gnss_output_protocol selected_protocol;
 };
 
 union message_length {
@@ -198,8 +201,14 @@ static int prepare_zedf9_gnss_protocol_msg(const enum gnss_output_protocol proto
 	const size_t total_len = get_msg_total_len(ZED_F9_PROTOCOL_MSG);
 	const size_t setting_len = sizeof(int) + sizeof(bool);
 
-	if (total_len != PROTOCOL_MSG_TOTAL_LEN)
-		goto bad_msg;
+	if (IS_ERR_OR_NULL(features)) {
+		dev_err(dev, "Invalid GNSS driver data.\n");
+		return -EINVAL;
+	}
+	if (total_len != PROTOCOL_MSG_TOTAL_LEN) {
+		dev_err(dev, "Malformed UBX protocol configuration message\n");
+		return -EINVAL;
+	}
 
 	/* Support either UBX or NMEA output, so disable one when enabling the other. */
 	if ((UBX != protocol) && (NMEA != protocol)) {
@@ -240,10 +249,6 @@ static int prepare_zedf9_gnss_protocol_msg(const enum gnss_output_protocol proto
 	ZED_F9_PROTOCOL_MSG[PROTOCOL_FIRST_CHECKSUM_BYTE] = checksum[0];
 	ZED_F9_PROTOCOL_MSG[PROTOCOL_FIRST_CHECKSUM_BYTE + 1U] = checksum[1];
 	return 0;
-
- bad_msg:
-	dev_err(dev, "Malformed UBX protocol configuration message\n");
-	return -EINVAL;
 }
 
 static int prepare_zedf9_antenna_msg(const bool state,
@@ -361,30 +366,95 @@ static int enable_zedf9_antenna_control(struct gnss_device *gdev, struct gnss_se
 	return 0;
 }
 
-static int set_zedf9_gnss_protocol(struct gnss_device *gdev, struct gnss_serial *gserial) {
+/* Set the default protocol defined in the driver data. */
+static int set_zedf9_gnss_protocol(struct gnss_device *gdev, struct gnss_serial *gserial, const enum gnss_output_protocol protocol) {
 	const struct ubx_data *data = gnss_serial_get_drvdata(gserial);
 	const struct ubx_features *features = data->features;
-	enum gnss_output_protocol protocol;
 	size_t count = 0U;
-	int ret;
 
-	if (!data->features)
-		return -EINVAL;
-	protocol = features->protocol;
-
-	ret = prepare_zedf9_gnss_protocol_msg(protocol, &gdev->dev, features);
+	int ret = prepare_zedf9_gnss_protocol_msg(protocol, &gdev->dev, features);
 	if (ret)
 		return ret;
 	count = gdev->ops->write_raw(gdev, ZED_F9_PROTOCOL_MSG, PROTOCOL_MSG_TOTAL_LEN);
 	if (count != PROTOCOL_MSG_TOTAL_LEN) {
-		dev_err(&gdev->dev, "Failed to set GNSS protocol to %s\n.", (UBX == protocol) ? "UBX" : "NMEA");
-		return count;
+		dev_err(&gdev->dev, "Failed to set GNSS protocol to %s.\n", (UBX == protocol) ? "UBX" : "NMEA");
+		return EINVAL;
 	}
+	dev_info(&gdev->dev, "Set GNSS protocol to %s.\n", (UBX == protocol) ? "UBX" : "NMEA");
 
-	dev_info(&gdev->dev, "Set GNSS protocol to %s\n.", (UBX == protocol) ? "UBX" : "NMEA");
 	return 0;
 }
 
+static int serdev_maybe_set_default_baud(struct serdev_device *serdev,
+		const speed_t default_baud, const bool is_configured) {
+	speed_t new_baud = 0U;
+	int ret = serdev_device_open(serdev);
+	if (ret)
+		return ret;
+
+	serdev_device_set_flow_control(serdev, false);
+	/* Don't reset to default baud if a higher baud is already set */
+	if (!is_configured) {
+		/* Initially set the UART to the default speed to match the GNSS' power-on value. */
+		new_baud = serdev_device_set_baudrate(serdev, default_baud);
+		if (default_baud != new_baud) {
+		    dev_err(&serdev->dev, "Failed to set serial device to GNSS default baud %u\n",
+			    default_baud);
+		    serdev_device_close(serdev);
+		    return -EINVAL;
+		}
+		dev_info(&serdev->dev, "Configured serial device default baud.\n");
+	}
+	return 0;
+}
+
+static ssize_t protocol_store(struct device *dev, struct device_attribute *attr,
+		const char *buf, size_t count) {
+	struct gnss_device *gdev = to_gnss_device(dev);
+	struct gnss_serial *gserial;
+	struct ubx_data *data;
+	ssize_t ret = -EINVAL;
+
+	if (!gdev) {
+		dev_err(dev, "Invalid GNSS device.\n");
+		return ret;
+	}
+	gserial = gnss_get_drvdata(gdev);
+	if (!gserial) {
+		dev_err(dev, "Invalid GNSS serial device.\n");
+		return ret;
+	}
+	data = gnss_serial_get_drvdata(gserial);
+	if (!data || !data->features) {
+		dev_err(dev, "Lookup of driver data failed.\n");
+		return ret;
+	}
+
+	/* Opens serial device in order to ready it to receive the command. */
+	ret = serdev_maybe_set_default_baud(gserial->serdev,
+		data->features->default_baud, data->is_configured);
+	if (ret)
+		return ret;
+
+	if (sysfs_streq(buf, "UBX")) {
+		data->selected_protocol = UBX;
+		ret = set_zedf9_gnss_protocol(gdev, gserial, UBX);
+	} else if (sysfs_streq(buf, "NMEA")) {
+		data->selected_protocol = NMEA;
+		ret = set_zedf9_gnss_protocol(gdev, gserial, NMEA);
+	} else {
+		data->selected_protocol = PROTOCOL_NONE;
+		dev_err(dev, "Valid GNSS protocol specification are 'NMEA' or 'UBX'.\n");
+		return -EINVAL;
+	}
+	if (ret)
+		return ret;
+
+	serdev_device_close(gserial->serdev);
+	return count;
+}
+
+static DEVICE_ATTR_WO(protocol);
 
 static int zed_f9_serial_open(struct gnss_device *gdev)
 {
@@ -392,25 +462,18 @@ static int zed_f9_serial_open(struct gnss_device *gdev)
 	struct serdev_device *serdev = gserial->serdev;
 	struct ubx_data *data = gnss_serial_get_drvdata(gserial);
 	const struct ubx_features *features = data->features;
-	speed_t new_baud = 0U;
-	int ret;
+	speed_t new_baud = 0;
+	int ret = -EINVAL;
 
-	ret = serdev_device_open(serdev);
-	if (ret)
-		return ret;
 	if (!features)
-		return -EINVAL;
+		goto err_close;
 
-	serdev_device_set_flow_control(serdev, false);
-
+	/* opens the serial device */
+	ret = serdev_maybe_set_default_baud(serdev, features->default_baud,
+		data->is_configured);
+	if (ret)
+		goto err_close;
 	if (!data->is_configured) {
-		/* Initially set the UART to the default speed to match the GNSS' power-on value. */
-		new_baud = serdev_device_set_baudrate(serdev, features->default_baud);
-		if (features->default_baud != new_baud) {
-		    dev_err(&gdev->dev, "Failed to set serial device to GNSS default baud %u\n",
-			    features->default_baud);
-		}
-
 		/* 4800 is the default value set by gnss_serial_parse_dt() */
 		if (gserial->speed == 4800) {
 			/* Fall back instead to Zed F9 default */
@@ -419,30 +482,34 @@ static int zed_f9_serial_open(struct gnss_device *gdev)
 			ret = set_zedf9_baud(gdev, serdev, gserial);
 			if (ret) {
 				dev_err(&gdev->dev, "GNSS speed setting to %u failed\n", gserial->speed);
-				return ret;
+				goto err_close;
 			}
 			new_baud = serdev_device_set_baudrate(serdev, gserial->speed);
 			if (gserial->speed != new_baud) {
 				dev_err(&gdev->dev, "Serial device speed setting to %u failed\n", gserial->speed);
-				return ret;
+				goto err_close;
 			}
 			dev_info(&gdev->dev, "Set GNSS speed to %u\n", gserial->speed);
 		}
 
 		ret = enable_zedf9_antenna_control(gdev, gserial);
 		if (ret)
-			return ret;
-		ret = set_zedf9_gnss_protocol(gdev, gserial);
+			goto err_close;
+		/* Don't overwrite the protocol set by userspace, if any. */
+		enum gnss_output_protocol protocol_to_set = (PROTOCOL_NONE == data->selected_protocol) ?
+			features->default_protocol : data->selected_protocol;
+		ret = set_zedf9_gnss_protocol(gdev, gserial, protocol_to_set);
 		if (ret)
-			return ret;
+			goto err_close;
 
 		data->is_configured = 1;
 	}
-
+	/* Increase reference count of the serial device since it is open. */
 	ret = pm_runtime_get_sync(&serdev->dev);
 	if (ret < 0) {
 		pm_runtime_put_noidle(&serdev->dev);
-		goto err_close;
+		serdev_device_close(serdev);
+		return ret;
 	}
 	return 0;
 
@@ -511,8 +578,7 @@ static const struct ubx_features __maybe_unused zedf9_feats = {
 	.min_baud				=	9600,
 	.default_baud				=	38400,
 	.max_baud				=	921600,
-	.max_baud				=	921600,
-	.protocol  	       			=	UBX,
+	.default_protocol     			=	UBX,
 };
 
 #ifdef CONFIG_OF
@@ -532,6 +598,7 @@ static int ubx_probe(struct serdev_device *serdev)
 	struct gpio_desc *reset;
 	struct ubx_data *data;
 	struct gnss_operations *ubx_gnss_ops;
+	struct gnss_device *gdev;
 	int ret;
 
 	gserial = gnss_serial_allocate(serdev, sizeof(*data));
@@ -547,18 +614,20 @@ static int ubx_probe(struct serdev_device *serdev)
 
 	gserial->ops = &ubx_gserial_ops;
 
-	gserial->gdev->type = GNSS_TYPE_UBX;
+	gdev = gserial->gdev;
+	gdev->type = GNSS_TYPE_UBX;
 
 	data = gnss_serial_get_drvdata(gserial);
 #if IS_ENABLED(CONFIG_OF)
 	{
 		data->is_configured = 0;
+		data->selected_protocol = PROTOCOL_NONE;
 		data->features = of_match_device(ubx_of_match, &serdev->dev)->data;
 		if (data->features && data->features->open) {
 			ubx_gnss_ops->open  = data->features->open;
 			ubx_gnss_ops->close = gserial->gdev->ops->close;
 			ubx_gnss_ops->write_raw = gserial->gdev->ops->write_raw;
-			gserial->gdev->ops = ubx_gnss_ops;
+			gdev->ops = ubx_gnss_ops;
 		}
 	}
 #endif
@@ -583,6 +652,17 @@ static int ubx_probe(struct serdev_device *serdev)
 	if (ret)
 		goto err_free_gserial;
 
+#if IS_ENABLED(CONFIG_OF)
+	{
+		/* Create sysfs attribute for GNSS protocol setting. */
+		ret = device_create_file(&gdev->dev, &dev_attr_protocol);
+		if (ret) {
+			dev_err(&gdev->dev, "Error creating GNSS protocol sysfs entry.\n");
+			return ret;
+		}
+	}
+#endif
+
 	return 0;
 
 err_free_gserial:
@@ -591,6 +671,7 @@ err_free_gserial:
 	return ret;
 }
 
+/* TODO: free the sysfs GNSS protocol attribute if it exists? */
 static void ubx_remove(struct serdev_device *serdev)
 {
 	struct gnss_serial *gserial = serdev_device_get_drvdata(serdev);

@@ -7,6 +7,8 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#include "core.h"
+
 #include <linux/cdev.h>
 #include <linux/errno.h>
 #include <linux/fs.h>
@@ -30,8 +32,6 @@ static dev_t gnss_first;
 /* FIFO size must be a power of two */
 #define GNSS_READ_FIFO_SIZE	4096
 #define GNSS_WRITE_BUF_SIZE	1024
-
-#define to_gnss_device(d) container_of((d), struct gnss_device, dev)
 
 static int gnss_open(struct inode *inode, struct file *file)
 {
