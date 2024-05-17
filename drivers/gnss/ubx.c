@@ -385,7 +385,12 @@ static int set_zedf9_gnss_protocol(struct gnss_device *gdev, struct gnss_serial 
 	return 0;
 }
 
-static int serdev_maybe_set_default_baud(struct serdev_device *serdev,
+/*
+ *  Opens serial device in order to ready it to receive commands.
+ *  If the device is not yet configured, also set the serial device to the GNSS default baud.
+ *  Closes device on error.
+ */
+static int zed_f9_serdev_maybe_set_default_baud(struct serdev_device *serdev,
 		const speed_t default_baud, const bool is_configured) {
 	speed_t new_baud = 0U;
 	int ret = serdev_device_open(serdev);
@@ -430,8 +435,8 @@ static ssize_t protocol_store(struct device *dev, struct device_attribute *attr,
 		return ret;
 	}
 
-	/* Opens serial device in order to ready it to receive the command. */
-	ret = serdev_maybe_set_default_baud(gserial->serdev,
+	/* Leaves serial device open on success, but closes it on failure. */
+	ret = zed_f9_serdev_maybe_set_default_baud(gserial->serdev,
 		data->features->default_baud, data->is_configured);
 	if (ret)
 		return ret;
@@ -445,15 +450,15 @@ static ssize_t protocol_store(struct device *dev, struct device_attribute *attr,
 	} else {
 		data->selected_protocol = PROTOCOL_NONE;
 		dev_err(dev, "Valid GNSS protocol specification are 'NMEA' or 'UBX'.\n");
-		return -EINVAL;
+		ret = -EINVAL;
 	}
-	if (ret)
-		return ret;
 
 	serdev_device_close(gserial->serdev);
+
+	if (ret)
+		return ret;
 	return count;
 }
-
 static DEVICE_ATTR_WO(protocol);
 
 static int zed_f9_serial_open(struct gnss_device *gdev)
@@ -468,11 +473,11 @@ static int zed_f9_serial_open(struct gnss_device *gdev)
 	if (!features)
 		goto err_close;
 
-	/* opens the serial device */
-	ret = serdev_maybe_set_default_baud(serdev, features->default_baud,
+	/* If successful, opens the serial device */
+	ret = zed_f9_serdev_maybe_set_default_baud(serdev, features->default_baud,
 		data->is_configured);
 	if (ret)
-		goto err_close;
+		return ret;
 	if (!data->is_configured) {
 		/* 4800 is the default value set by gnss_serial_parse_dt() */
 		if (gserial->speed == 4800) {
@@ -508,8 +513,7 @@ static int zed_f9_serial_open(struct gnss_device *gdev)
 	ret = pm_runtime_get_sync(&serdev->dev);
 	if (ret < 0) {
 		pm_runtime_put_noidle(&serdev->dev);
-		serdev_device_close(serdev);
-		return ret;
+		goto err_close;
 	}
 	return 0;
 
