@@ -34,17 +34,39 @@ const size_t FIRST_VALUE_BYTE = 14U;
 const size_t BAUD_FIRST_CHECKSUM_BYTE = 18U;
 const size_t ANT_FIRST_CHECKSUM_BYTE = 30U;
 const size_t PROTOCOL_FIRST_CHECKSUM_BYTE = 45U;
+const size_t PPS_FIRST_CHECKSUM_BYTE = 15U;
 const size_t BAUD_MSG_TOTAL_LEN = 20U;
 const size_t NUM_ANT_COMMANDS = 4U;
 const size_t NUM_PROTOCOL_COMMANDS = 7U;
 const size_t ANT_MSG_TOTAL_LEN = 32U;
 const size_t PROTOCOL_MSG_TOTAL_LEN = 47U;
+const size_t PPS_MSG_TOTAL_LEN = 17U;
 
 enum gnss_output_protocol {
 	PROTOCOL_NONE,
 	UBX,
 	NMEA,
 };
+
+enum gnss_timepulse_reference {
+	UTC,
+	GPS,
+	GLO,
+	BDS,
+	GAL,
+	NAVIC,
+};
+
+char *timepulse_reference_names[] = {
+	"UTC",
+	"GPS",
+	"GLO",
+	"BDS",
+	"GAL",
+	"NAVIC",
+};
+
+const size_t max_reference_name = ARRAY_SIZE(timepulse_reference_names) - 1U;
 
 uint8_t ZED_F9_BAUD_MSG[] = {
 	0xB5, 0x62, /* 0-1 preamble */
@@ -112,15 +134,32 @@ uint8_t ZED_F9_PROTOCOL_MSG[] = {
 	0x00, 0x00 /* 45-46 Placeholder for checksum */
 };
 
+/*
+ * Select GPS reference for time pulse via CFG-TP-TIMEGRID_TP1 KeyID 0x2005000c.
+ */
+uint8_t ZED_F9_PPS_MSG[] = {
+	0xB5, 0x62, /* 0-1 preamble */
+	0x06, 0x8A, /* 2-3 CFG_VALSET command */
+	0x09, 0x00, /* 4-5 payload length = 9 bytes = 4 + one key + enum value */
+	0x00, /* 6 U-Blox API version */
+	0x01, /* 7 Write to RAM */
+	0x00, 0x00, /* 8-9 Reserved */
+	0x00, 0x00, 0x00, 0x00, /* 10-13 Placeholder for CFG-TP-TIMEGRID_TP1 register */
+	0x00, /* 14 Placeholder for time reference choice */
+	0x00, 0x00 /* 15-16 Placeholder for checksum */
+};
+
 struct ubx_features {
 	int (*open)(struct gnss_device *gdev);
 	size_t antenna_regs[4U];  /* Size must be kept in sync with NUM_ANT_COMMANDS */
 	size_t baud_config_reg;
 	size_t protocol_regs[7U];   /* Size must be kept in sync with NUM_PROTOCOL_COMMANDS */
+	size_t timepulse_reg;
 	u32 min_baud;
 	u32 default_baud;
 	u32 max_baud;
 	enum gnss_output_protocol default_protocol;
+	enum gnss_timepulse_reference default_time_reference;
 };
 
 struct ubx_data {
@@ -317,6 +356,32 @@ static int prepare_zedf9_baud_msg(const speed_t speed,
 	return -EINVAL;
 }
 
+static int prepare_zedf9_time_pulse_msg(const struct device *dev,
+		const struct ubx_features *features)
+{
+	union int_to_bytes cfg_register;
+	int i = 0;
+	uint8_t checksum[2];
+	const size_t total_len = get_msg_total_len(ZED_F9_PPS_MSG);
+
+	if (total_len != PPS_MSG_TOTAL_LEN)
+		goto bad_msg;
+
+	cfg_register.int_val = features->timepulse_reg;
+	for (i = 0; i < 4; i++) {
+		ZED_F9_PPS_MSG[FIRST_CONFIG_REGISTER_BYTE + i] = cfg_register.bytes[i];
+	}
+	ZED_F9_PPS_MSG[FIRST_VALUE_BYTE] = features->default_time_reference;
+	calc_ubx_checksum(ZED_F9_PPS_MSG, checksum, total_len);
+	ZED_F9_PPS_MSG[PPS_FIRST_CHECKSUM_BYTE] = checksum[0];
+	ZED_F9_PPS_MSG[PPS_FIRST_CHECKSUM_BYTE + 1U] = checksum[1];
+	return 0;
+
+ bad_msg:
+	dev_err(dev, "Malformed UBX timepulse-reference message\n");
+	return -EINVAL;
+}
+
 /* Configure the Zed F9 baud rate via the UBX-CFG-VALSET message. */
 static int set_zedf9_baud(struct gnss_device *gdev,
 					struct serdev_device *serdev, struct gnss_serial *gserial)
@@ -413,6 +478,29 @@ static int zed_f9_serdev_maybe_set_default_baud(struct serdev_device *serdev,
 	return 0;
 }
 
+/* Configure PPS by selecting the time pulse reference. */
+static int zedf9_set_time_pulse_reference(struct gnss_device *gdev, struct gnss_serial* gserial) {
+	const struct ubx_data *data = gnss_serial_get_drvdata(gserial);
+	const struct ubx_features *features = data->features;
+	size_t count = 0U;
+	int ret;
+
+	if (!data->features)
+		return -EINVAL;
+
+	ret = prepare_zedf9_time_pulse_msg(&gdev->dev, features);
+	if (ret)
+		return ret;
+	count = gdev->ops->write_raw(gdev, ZED_F9_PPS_MSG, PPS_MSG_TOTAL_LEN);
+	if (PPS_MSG_TOTAL_LEN != count) {
+		dev_err(&gdev->dev, "Time pulse reference setting failed.");
+		return count;
+	}
+	BUG_ON(max_reference_name < features->default_time_reference);
+	dev_info(&gdev->dev, "Set time pulse reference to %s.\n", timepulse_reference_names[features->default_time_reference]);
+	return 0;
+}
+
 static ssize_t protocol_store(struct device *dev, struct device_attribute *attr,
 		const char *buf, size_t count) {
 	struct gnss_device *gdev = to_gnss_device(dev);
@@ -506,6 +594,9 @@ static int zed_f9_serial_open(struct gnss_device *gdev)
 		ret = set_zedf9_gnss_protocol(gdev, gserial, protocol_to_set);
 		if (ret)
 			goto err_close;
+		ret = zedf9_set_time_pulse_reference(gdev, gserial);
+		if (ret)
+			goto err_close;
 
 		data->is_configured = 1;
 	}
@@ -579,10 +670,12 @@ static const struct ubx_features __maybe_unused zedf9_feats = {
 							  0x20910160, 0x209102a5,
 						/* CFG_MSGOUT_UBX_RXM_SFRBX_UART1*/
 							  0x20910232},
+	.timepulse_reg				=	0x2005000c,
 	.min_baud				=	9600,
 	.default_baud				=	38400,
 	.max_baud				=	921600,
 	.default_protocol     			=	UBX,
+	.default_time_reference		=	GPS,
 };
 
 #ifdef CONFIG_OF
