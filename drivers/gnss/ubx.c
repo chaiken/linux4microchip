@@ -450,34 +450,6 @@ static int set_zedf9_gnss_protocol(struct gnss_device *gdev, struct gnss_serial 
 	return 0;
 }
 
-/*
- *  Opens serial device in order to ready it to receive commands.
- *  If the device is not yet configured, also set the serial device to the GNSS default baud.
- *  Closes device on error.
- */
-static int zed_f9_serdev_maybe_set_default_baud(struct serdev_device *serdev,
-		const speed_t default_baud, const bool is_configured) {
-	speed_t new_baud = 0U;
-	int ret = serdev_device_open(serdev);
-	if (ret)
-		return ret;
-
-	serdev_device_set_flow_control(serdev, false);
-	/* Don't reset to default baud if a higher baud is already set */
-	if (!is_configured) {
-		/* Initially set the UART to the default speed to match the GNSS' power-on value. */
-		new_baud = serdev_device_set_baudrate(serdev, default_baud);
-		if (default_baud != new_baud) {
-		    dev_err(&serdev->dev, "Failed to set serial device to GNSS default baud %u\n",
-			    default_baud);
-		    serdev_device_close(serdev);
-		    return -EINVAL;
-		}
-		dev_info(&serdev->dev, "Configured serial device default baud.\n");
-	}
-	return 0;
-}
-
 /* Configure PPS by selecting the time pulse reference. */
 static int zedf9_set_time_pulse_reference(struct gnss_device *gdev, struct gnss_serial* gserial) {
 	const struct ubx_data *data = gnss_serial_get_drvdata(gserial);
@@ -501,10 +473,102 @@ static int zedf9_set_time_pulse_reference(struct gnss_device *gdev, struct gnss_
 	return 0;
 }
 
+/*
+ * Almost the same as gnss_serial_open() but does not set baud.
+ * Leaves device closed on error.
+ */
+static int _do_serial_open(struct serdev_device* serdev) {
+	int ret = serdev_device_open(serdev);
+	if (ret) {
+		dev_err(&serdev->dev, "Unable to open GNSS serial device.\n");
+		return ret;
+	}
+	serdev_device_set_flow_control(serdev, false);
+	ret = pm_runtime_get_sync(&serdev->dev);
+	if (ret < 0) {
+		serdev_device_close(serdev);
+		pm_runtime_put_noidle(&serdev->dev);
+		return ret;
+	}
+	return 0;
+}
+
+/* Same as gnss_serial_close(). */
+static void _do_serial_close(struct serdev_device* serdev) {
+	serdev_device_close(serdev);
+	pm_runtime_put(&serdev->dev);
+}
+
+/* Call with serial device already open */
+static int zed_f9_configure(struct gnss_device *gdev) {
+	struct gnss_serial *gserial = gnss_get_drvdata(gdev);
+	struct serdev_device *serdev = gserial->serdev;
+	struct ubx_data *data = gnss_serial_get_drvdata(gserial);
+	const struct ubx_features *features;
+	speed_t new_baud = 0U;
+	int ret;
+
+	if (!data) {
+		dev_err(&gdev->dev, "Lookup of driver data failed.\n");
+		return ret;
+	}
+	if (data->is_configured)
+		return 0;
+	features = data->features;
+	if (!features) {
+		dev_warn(&gdev->dev, "No configured driver features.\n");
+		return 0;
+	}
+
+	/* Initially set the UART to the default speed to match the GNSS' power-on value. */
+	new_baud = serdev_device_set_baudrate(serdev, features->default_baud);
+	if (features->default_baud != new_baud) {
+		dev_err(&gdev->dev, "Failed to set serial device to GNSS default baud %u\n",
+			features->default_baud);
+	}
+	/* 4800 is the default value set by gnss_serial_parse_dt() */
+	if (gserial->speed == 4800) {
+		/* Fall back instead to Zed F9 default */
+		gserial->speed = features->default_baud;
+	} else {
+		ret = set_zedf9_baud(gdev, serdev, gserial);
+		if (ret) {
+			dev_err(&gdev->dev, "GNSS speed setting to %u failed\n", gserial->speed);
+			return ret;
+		}
+		new_baud = serdev_device_set_baudrate(serdev, gserial->speed);
+		if (gserial->speed != new_baud) {
+			dev_err(&gdev->dev, "Serial device speed setting to %u failed\n", gserial->speed);
+			return ret;
+		}
+		dev_info(&gdev->dev, "Set GNSS speed to %u\n", gserial->speed);
+	}
+
+	ret = enable_zedf9_antenna_control(gdev, gserial);
+	if (ret)
+		return ret;
+
+	/* Don't overwrite the protocol set by userspace, if any. */
+	enum gnss_output_protocol protocol_to_set = (PROTOCOL_NONE == data->selected_protocol) ?
+			features->default_protocol : data->selected_protocol;
+	ret = set_zedf9_gnss_protocol(gdev, gserial, protocol_to_set);
+	if (ret)
+		return ret;
+	ret = zedf9_set_time_pulse_reference(gdev, gserial);
+	if (ret)
+		return ret;
+
+	data->is_configured = 1;
+
+	return 0;
+}
+
+/* Opens and then closes the serial device.   Configures the GNSS if need be. */
 static ssize_t protocol_store(struct device *dev, struct device_attribute *attr,
 		const char *buf, size_t count) {
 	struct gnss_device *gdev = to_gnss_device(dev);
 	struct gnss_serial *gserial;
+	struct serdev_device *serdev;
 	struct ubx_data *data;
 	ssize_t ret = -EINVAL;
 
@@ -512,22 +576,36 @@ static ssize_t protocol_store(struct device *dev, struct device_attribute *attr,
 		dev_err(dev, "Invalid GNSS device.\n");
 		return ret;
 	}
+
+
 	gserial = gnss_get_drvdata(gdev);
 	if (!gserial) {
 		dev_err(dev, "Invalid GNSS serial device.\n");
 		return ret;
 	}
+	serdev = gserial->serdev;
 	data = gnss_serial_get_drvdata(gserial);
-	if (!data || !data->features) {
+	if (!data) {
 		dev_err(dev, "Lookup of driver data failed.\n");
 		return ret;
 	}
 
-	/* Leaves serial device open on success, but closes it on failure. */
-	ret = zed_f9_serdev_maybe_set_default_baud(gserial->serdev,
-		data->features->default_baud, data->is_configured);
-	if (ret)
-		return ret;
+	/* Atomically take device reference. */
+	get_device(&gdev->dev);
+	/* Protect the counter from changes by concurrent gnss users. */
+	down_write(&gdev->rwsem);
+	if (gdev->disconnected) {
+		ret = -ENODEV;
+		goto close;
+	}
+	/* Open the device iff it is not open. Will configure the device if needed. */
+	if (gdev->count++ == 0) {
+		ret = gdev->ops->open(gdev);
+		if (ret) {
+			dev_err(&gdev->dev, "Unable to open GNSS serial device.\n");
+			goto close;
+		}
+	}
 
 	if (sysfs_streq(buf, "UBX")) {
 		data->selected_protocol = UBX;
@@ -540,77 +618,41 @@ static ssize_t protocol_store(struct device *dev, struct device_attribute *attr,
 		dev_err(dev, "Valid GNSS protocol specification are 'NMEA' or 'UBX'.\n");
 		ret = -EINVAL;
 	}
-
-	serdev_device_close(gserial->serdev);
-
 	if (ret)
-		return ret;
-	return count;
+		goto close;
+	ret = count;
+
+close:
+	if (--gdev->count == 0) {
+		_do_serial_close(serdev);
+	}
+	up_write(&gdev->rwsem);
+	put_device(&gdev->dev);
+	return ret;
 }
 static DEVICE_ATTR_WO(protocol);
 
+/* Opens the serial device, not the GNSS. */
 static int zed_f9_serial_open(struct gnss_device *gdev)
 {
 	struct gnss_serial *gserial = gnss_get_drvdata(gdev);
 	struct serdev_device *serdev = gserial->serdev;
-	struct ubx_data *data = gnss_serial_get_drvdata(gserial);
-	const struct ubx_features *features = data->features;
-	speed_t new_baud = 0;
-	int ret = -EINVAL;
 
-	if (!features)
-		goto err_close;
 
-	/* If successful, opens the serial device */
-	ret = zed_f9_serdev_maybe_set_default_baud(serdev, features->default_baud,
-		data->is_configured);
-	if (ret)
+	int ret = _do_serial_open(serdev);
+	if (ret) {
+		dev_err(&gdev->dev, "Unable to open GNSS serial device.\n");
 		return ret;
-	if (!data->is_configured) {
-		/* 4800 is the default value set by gnss_serial_parse_dt() */
-		if (gserial->speed == 4800) {
-			/* Fall back instead to Zed F9 default */
-			gserial->speed = features->default_baud;
-		} else {
-			ret = set_zedf9_baud(gdev, serdev, gserial);
-			if (ret) {
-				dev_err(&gdev->dev, "GNSS speed setting to %u failed\n", gserial->speed);
-				goto err_close;
-			}
-			new_baud = serdev_device_set_baudrate(serdev, gserial->speed);
-			if (gserial->speed != new_baud) {
-				dev_err(&gdev->dev, "Serial device speed setting to %u failed\n", gserial->speed);
-				goto err_close;
-			}
-			dev_info(&gdev->dev, "Set GNSS speed to %u\n", gserial->speed);
-		}
-
-		ret = enable_zedf9_antenna_control(gdev, gserial);
-		if (ret)
-			goto err_close;
-		/* Don't overwrite the protocol set by userspace, if any. */
-		enum gnss_output_protocol protocol_to_set = (PROTOCOL_NONE == data->selected_protocol) ?
-			features->default_protocol : data->selected_protocol;
-		ret = set_zedf9_gnss_protocol(gdev, gserial, protocol_to_set);
-		if (ret)
-			goto err_close;
-		ret = zedf9_set_time_pulse_reference(gdev, gserial);
-		if (ret)
-			goto err_close;
-
-		data->is_configured = 1;
 	}
-	/* Increase reference count of the serial device since it is open. */
-	ret = pm_runtime_get_sync(&serdev->dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(&serdev->dev);
+	ret = zed_f9_configure(gdev);
+	if (ret) {
+		dev_err(&gdev->dev, "GNSS serial device configuration failed.\n");
 		goto err_close;
 	}
 	return 0;
 
 err_close:
-	serdev_device_close(serdev);
-
+	_do_serial_close(serdev);
 	return ret;
 }
 
