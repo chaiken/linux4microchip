@@ -801,6 +801,15 @@ static int ubx_probe(struct serdev_device *serdev)
 		}
 	}
 #endif
+	/* Open and close the device just to run the configure function, which requires
+	 *  the device to be open. */
+	ret = zed_f9_serial_open(gdev);
+	if (ret) {
+		dev_err(&gdev->dev, "Unable to open serial device from driver probe \
+			method.\n");
+		return ret;
+	}
+	_do_serial_close(serdev);
 
 	return 0;
 
