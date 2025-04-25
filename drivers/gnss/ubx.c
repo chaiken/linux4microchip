@@ -32,10 +32,12 @@ const size_t CHECKSUM_LEN = 2;
 const size_t FIRST_CONFIG_REGISTER_BYTE = 10U;
 const size_t FIRST_VALUE_BYTE = 14U;
 const size_t BAUD_FIRST_CHECKSUM_BYTE = 18U;
+const size_t RATE_MEAS_FIRST_CHECKSUM_BYTE = 18U;
 const size_t ANT_FIRST_CHECKSUM_BYTE = 30U;
 const size_t PROTOCOL_FIRST_CHECKSUM_BYTE = 65U;
 const size_t PPS_FIRST_CHECKSUM_BYTE = 15U;
 const size_t BAUD_MSG_TOTAL_LEN = 20U;
+const size_t RATE_MEAS_MSG_TOTAL_LEN = 20U;
 const size_t NUM_ANT_COMMANDS = 4U;
 /* All configurations except BeiDou constellation */
 const size_t NUM_PROTOCOL_ENABLE_COMMANDS = 8U;
@@ -80,6 +82,18 @@ uint8_t ZED_F9_BAUD_MSG[] = {
 	0x00, 0x00, /* 8-9 Reserved */
 	0x00, 0x00, 0x00, 0x00, /* 10-13 Placeholder for configuration register = key */
 	0x00, 0x00, 0x00, 0x00, /* 14-17 Placeholder for baud value */
+	0x00, 0x00 /* 18-19 Placeholder for checksum */
+};
+
+uint8_t ZED_F9_RATE_MEAS_MSG[] = {
+	0xB5, 0x62, /* 0-1 preamble */
+	0x06, 0x8A, /* 2-3 CFG_VALSET command */
+	0x0C, 0x00, /* 4-5 payload length = 12 for one key + int-value */
+	0x00, /* 6 U-Blox API version */
+	0x01, /* 7 Write to RAM */
+	0x00, 0x00, /* 8-9 Reserved */
+	0x00, 0x00, 0x00, 0x00, /* 10-13 Placeholder for configuration register = key */
+	0x00, 0x00, 0x00, 0x00, /* 14-17 Placeholder for rate measurement period value */
 	0x00, 0x00 /* 18-19 Placeholder for checksum */
 };
 
@@ -171,9 +185,12 @@ struct ubx_features {
 	   NUM_PROTOCOL_DISABLE_COMMANDS */
 	size_t protocol_regs[11U];
 	size_t timepulse_reg;
+	size_t rate_meas_reg;
 	u32 min_baud;
 	u32 default_baud;
 	u32 max_baud;
+	u32 default_meas_period;
+	u32 min_meas_period;
 	enum gnss_output_protocol default_protocol;
 	enum gnss_timepulse_reference default_time_reference;
 };
@@ -385,6 +402,36 @@ static int prepare_zedf9_baud_msg(const speed_t speed,
 	return -EINVAL;
 }
 
+static int prepare_zedf9_rate_meas_msg(const uint32_t period,
+					const struct device *dev,
+					    const struct ubx_features *features)
+{
+	union int_to_bytes cfg_val, cfg_register;
+	int i = 0;
+	uint8_t checksum[2];
+	const size_t total_len = get_msg_total_len(ZED_F9_RATE_MEAS_MSG);
+
+	if (total_len != RATE_MEAS_MSG_TOTAL_LEN)
+		goto bad_msg;
+
+	cfg_val.int_val = (period >= features->min_meas_period) ? period :
+	    features->min_meas_period;
+	cfg_register.int_val = features->rate_meas_reg;
+	for (i = 0; i < 4; i++) {
+		ZED_F9_BAUD_MSG[FIRST_VALUE_BYTE + i] = cfg_val.bytes[i];
+		ZED_F9_BAUD_MSG[FIRST_CONFIG_REGISTER_BYTE + i] = cfg_register.bytes[i];
+	}
+	calc_ubx_checksum(ZED_F9_RATE_MEAS_MSG, checksum, total_len);
+	ZED_F9_RATE_MEAS_MSG[BAUD_FIRST_CHECKSUM_BYTE] = checksum[0];
+	ZED_F9_RATE_MEAS_MSG[BAUD_FIRST_CHECKSUM_BYTE + 1U] = checksum[1];
+	return 0;
+
+ bad_msg:
+	dev_err(dev, "Malformed rate measurement message\n");
+	return -EINVAL;
+}
+
+
 static int prepare_zedf9_time_pulse_msg(const struct device *dev,
 		const struct ubx_features *features)
 {
@@ -433,6 +480,29 @@ static int set_zedf9_baud(struct gnss_device *gdev,
 		dev_err(&gdev->dev, "Baud-rate setting failed.");
 		return count;
 	}
+	return 0;
+}
+
+static int set_zedf9_rate_meas(struct gnss_device *gdev, struct gnss_serial *gserial)
+{
+	const struct ubx_data *data = gnss_serial_get_drvdata(gserial);
+	const struct ubx_features *features = data->features;
+	size_t count = 0U;
+	int ret;
+
+	if (!data->features)
+		return -EINVAL;
+	ret = prepare_zedf9_rate_meas_msg(features->default_meas_period, &gdev->dev, features);
+	if (ret)
+		return ret;
+	/* Now set the new measurement rate. */
+	count = gdev->ops->write_raw(gdev, ZED_F9_RATE_MEAS_MSG, RATE_MEAS_MSG_TOTAL_LEN);
+	if (count != RATE_MEAS_MSG_TOTAL_LEN) {
+		dev_err(&gdev->dev, "Measurement-rate setting failed.");
+		return count;
+	}
+	dev_info(&gdev->dev, "Set GNSS measurement rate period to %u ms.\n",
+		 features->default_meas_period);
 	return 0;
 }
 
@@ -586,6 +656,9 @@ static int zed_f9_configure(struct gnss_device *gdev) {
 	if (ret)
 		return ret;
 	ret = zedf9_set_time_pulse_reference(gdev, gserial);
+	if (ret)
+		return ret;
+	ret = set_zedf9_rate_meas(gdev, gserial);
 	if (ret)
 		return ret;
 
@@ -749,9 +822,13 @@ static const struct ubx_features __maybe_unused zedf9_feats = {
 						/* CFG-SIGNAL-BDS_B2_ENA */
 							  0x1031000e},
 	.timepulse_reg				=	0x2005000c,
+	.rate_meas_reg				=	0x30210002,
 	.min_baud				=	9600,
 	.default_baud				=	38400,
 	.max_baud				=	921600,
+	/* The default period for navigation solution reporting = 200 ms. */
+	.default_meas_period			=	200,
+	.min_meas_period			=	25,
 	.default_protocol     			=	UBX,
 	.default_time_reference		=	GPS,
 };
