@@ -33,13 +33,16 @@ const size_t FIRST_CONFIG_REGISTER_BYTE = 10U;
 const size_t FIRST_VALUE_BYTE = 14U;
 const size_t BAUD_FIRST_CHECKSUM_BYTE = 18U;
 const size_t ANT_FIRST_CHECKSUM_BYTE = 30U;
-const size_t PROTOCOL_FIRST_CHECKSUM_BYTE = 50U;
+const size_t PROTOCOL_FIRST_CHECKSUM_BYTE = 65U;
 const size_t PPS_FIRST_CHECKSUM_BYTE = 15U;
 const size_t BAUD_MSG_TOTAL_LEN = 20U;
 const size_t NUM_ANT_COMMANDS = 4U;
-const size_t NUM_PROTOCOL_COMMANDS = 8U;
+/* All configurations except BeiDou constellation */
+const size_t NUM_PROTOCOL_ENABLE_COMMANDS = 8U;
+/* 3 BeiDou-constellation configurations */
+const size_t NUM_PROTOCOL_DISABLE_COMMANDS = 3U;
 const size_t ANT_MSG_TOTAL_LEN = 32U;
-const size_t PROTOCOL_MSG_TOTAL_LEN = 52U;
+const size_t PROTOCOL_MSG_TOTAL_LEN = 67U;
 const size_t PPS_MSG_TOTAL_LEN = 17U;
 
 enum gnss_output_protocol {
@@ -108,11 +111,14 @@ uint8_t ZED_F9_ANTENNA_MSG[] = {
  *    UBX-RXM_RAWX to get raw measurements from each satellite.
  *    UBX-RXM-SFRBX to get raw satellite broadcast orbit data.
  *    UBX-MON-COMMS to get communication port statistics.
+ *    CFG-SIGNAL-BDS_ENA to turn off BeiDou constellation.
+ *    CFG-SIGNAL-BDS_B1_ENA to turn off another BeiDou constellation.
+ *    CFG-SIGNAL-BDS_B2_ENA to turn off yet another BeiDou constellation.
  */
 uint8_t ZED_F9_PROTOCOL_MSG[] = {
 	0xB5, 0x62, /* 0-1 preamble */
 	0x06, 0x8A, /* 2-3 CFG_VALSET command */
-	0x2C, 0x00, /* 4-5 payload length = 4 + 8 * (4B key + 1B value) */
+	0x3B, 0x00, /* 4-5 payload length = 4 + 11 * (4B key + 1B value) */
 	0x00, /* 6 U-Blox API version */
 	0x01, /* 7 Write to RAM */
 	0x00, 0x00, /* 8-9 Reserved */
@@ -133,7 +139,13 @@ uint8_t ZED_F9_PROTOCOL_MSG[] = {
 	0x00, /* 44 Placeholder for boolean value */
 	0x00, 0x00, 0x00, 0x00, /* 45-48 Placeholder for configuration register = key */
 	0x00, /* 49 Placeholder for boolean value */
-	0x00, 0x00 /* 50-51 Placeholder for checksum */
+	0x00, 0x00, 0x00, 0x00, /* 50-53 Placeholder for configuration register = key */
+	0x00, /* 54 Placeholder for boolean value */
+	0x00, 0x00, 0x00, 0x00, /* 55-58 Placeholder for configuration register = key */
+	0x00, /* 59 Placeholder for boolean value */
+	0x00, 0x00, 0x00, 0x00, /* 60-63 Placeholder for configuration register = key */
+	0x00, /* 64 Placeholder for boolean value */
+	0x00, 0x00 /* 65-66 Placeholder for checksum */
 };
 
 /*
@@ -155,7 +167,9 @@ struct ubx_features {
 	int (*open)(struct gnss_device *gdev);
 	size_t antenna_regs[4U];  /* Size must be kept in sync with NUM_ANT_COMMANDS */
 	size_t baud_config_reg;
-	size_t protocol_regs[8U];   /* Size must be kept in sync with NUM_PROTOCOL_COMMANDS */
+	/* Size must be kept in sync with NUM_PROTOCOL_ENABLE_COMMANDS +
+	   NUM_PROTOCOL_DISABLE_COMMANDS */
+	size_t protocol_regs[11U];
 	size_t timepulse_reg;
 	u32 min_baud;
 	u32 default_baud;
@@ -275,9 +289,10 @@ static int prepare_zedf9_gnss_protocol_msg(const enum gnss_output_protocol proto
 	}
 
 	/* Enable messages to be sent each epoch. */
-	for (i = 2; i < (int) NUM_PROTOCOL_COMMANDS; i++) {
+	for (i = 2; i < (int) NUM_PROTOCOL_ENABLE_COMMANDS; i++) {
 		/* 5U = 4 bytes for the key (register) plus 1 byte for the boolean value */
 		offset = i * 5U;
+		/* 1 for enable */
 		ZED_F9_PROTOCOL_MSG[FIRST_VALUE_BYTE + offset] = 1;
 		cfg_register.int_val = features->protocol_regs[i];
 		for (j = 0; j < sizeof(int); j++) {
@@ -285,7 +300,19 @@ static int prepare_zedf9_gnss_protocol_msg(const enum gnss_output_protocol proto
 				= cfg_register.bytes[j];
 		}
 	}
-
+	/* Disable BeiDou satellite message processing. The registers corresponding to
+	   settings to disable must be at the end of the array. */
+	for (i = NUM_PROTOCOL_ENABLE_COMMANDS ;
+	     i < (int) (NUM_PROTOCOL_ENABLE_COMMANDS + NUM_PROTOCOL_DISABLE_COMMANDS); i++) {
+		offset = i * 5U;
+		/* 0 for disable */
+		ZED_F9_PROTOCOL_MSG[FIRST_VALUE_BYTE + offset] = 0;
+		cfg_register.int_val = features->protocol_regs[i];
+		for (j = 0; j < sizeof(int); j++) {
+			ZED_F9_PROTOCOL_MSG[FIRST_CONFIG_REGISTER_BYTE + offset + j]
+				= cfg_register.bytes[j];
+		}
+	}
 	calc_ubx_checksum(ZED_F9_PROTOCOL_MSG, checksum, total_len);
 	ZED_F9_PROTOCOL_MSG[PROTOCOL_FIRST_CHECKSUM_BYTE] = checksum[0];
 	ZED_F9_PROTOCOL_MSG[PROTOCOL_FIRST_CHECKSUM_BYTE + 1U] = checksum[1];
@@ -708,13 +735,19 @@ static const struct ubx_features __maybe_unused zedf9_feats = {
 	.antenna_regs				=	{0x10a3002e, 0x10a3002f, 0x10a30031, 0x10a30033},
 	.baud_config_reg			=	0x40520001,
 						/* CFG_UART1OUTPROT_UBX, CFG_UART1OUTPROT_NMEA, */
+	/* The registers corresponding to settings to disable must be at the end of the
+	   array. */
 	.protocol_regs				=	{0x10740001, 0x10740002,
 						/* CFG_MSGOUT_UBX_NAV_PVT_UART1, CFG_MSGOUT_UBX_NAV_TIMEGPS_UART1, */
 						          0x20910007, 0x20910048,
 						/* CFG_MSGOUT_UBX_NAV_EOE_UART1, CFG_MSGOUT_UBX_RXM_RAWX_UART1, */
 							  0x20910160, 0x209102a5,
-						/* CFG_MSGOUT_UBX_RXM_SFRBX_UART1, CFG_MSGOUT_UBX_MON_COMMS_UART1 */
-							  0x20910232, 0x20910350},
+						/* CFG_MSGOUT_UBX_RXM_SFRBX_UART1, CFG_MSGOUT_UBX_MON_COMMS_UART1, */
+							  0x20910232, 0x20910350,
+						/* CFG-SIGNAL-BDS_ENA, CFG-SIGNAL-BDS_B1_ENA, */
+							  0x10310022, 0x1031000d,
+						/* CFG-SIGNAL-BDS_B2_ENA */
+							  0x1031000e},
 	.timepulse_reg				=	0x2005000c,
 	.min_baud				=	9600,
 	.default_baud				=	38400,
