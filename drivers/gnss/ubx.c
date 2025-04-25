@@ -33,13 +33,13 @@ const size_t FIRST_CONFIG_REGISTER_BYTE = 10U;
 const size_t FIRST_VALUE_BYTE = 14U;
 const size_t BAUD_FIRST_CHECKSUM_BYTE = 18U;
 const size_t ANT_FIRST_CHECKSUM_BYTE = 30U;
-const size_t PROTOCOL_FIRST_CHECKSUM_BYTE = 45U;
+const size_t PROTOCOL_FIRST_CHECKSUM_BYTE = 50U;
 const size_t PPS_FIRST_CHECKSUM_BYTE = 15U;
 const size_t BAUD_MSG_TOTAL_LEN = 20U;
 const size_t NUM_ANT_COMMANDS = 4U;
-const size_t NUM_PROTOCOL_COMMANDS = 7U;
+const size_t NUM_PROTOCOL_COMMANDS = 8U;
 const size_t ANT_MSG_TOTAL_LEN = 32U;
-const size_t PROTOCOL_MSG_TOTAL_LEN = 47U;
+const size_t PROTOCOL_MSG_TOTAL_LEN = 52U;
 const size_t PPS_MSG_TOTAL_LEN = 17U;
 
 enum gnss_output_protocol {
@@ -106,12 +106,13 @@ uint8_t ZED_F9_ANTENNA_MSG[] = {
  *    UBX-NAV-TIMEGPS to get the correspondence between local and GPS time.
  *    UBX-NAV-EOE to completion of navigation epoch messages.
  *    UBX-RXM_RAWX to get raw measurements from each satellite.
- *    UBX_RXM_SFRBX to get raw satellite broadcast orbit data.
+ *    UBX-RXM-SFRBX to get raw satellite broadcast orbit data.
+ *    UBX-MON-COMMS to get communication port statistics.
  */
 uint8_t ZED_F9_PROTOCOL_MSG[] = {
 	0xB5, 0x62, /* 0-1 preamble */
 	0x06, 0x8A, /* 2-3 CFG_VALSET command */
-	0x27, 0x00, /* 4-5 payload length = 4 + 7 * (4B key + 1B value) */
+	0x2C, 0x00, /* 4-5 payload length = 4 + 8 * (4B key + 1B value) */
 	0x00, /* 6 U-Blox API version */
 	0x01, /* 7 Write to RAM */
 	0x00, 0x00, /* 8-9 Reserved */
@@ -130,8 +131,9 @@ uint8_t ZED_F9_PROTOCOL_MSG[] = {
 	0x00, /* 39 Placeholder for boolean value */
 	0x00, 0x00, 0x00, 0x00, /* 40-43 Placeholder for configuration register = key */
 	0x00, /* 44 Placeholder for boolean value */
-
-	0x00, 0x00 /* 45-46 Placeholder for checksum */
+	0x00, 0x00, 0x00, 0x00, /* 45-48 Placeholder for configuration register = key */
+	0x00, /* 49 Placeholder for boolean value */
+	0x00, 0x00 /* 50-51 Placeholder for checksum */
 };
 
 /*
@@ -153,7 +155,7 @@ struct ubx_features {
 	int (*open)(struct gnss_device *gdev);
 	size_t antenna_regs[4U];  /* Size must be kept in sync with NUM_ANT_COMMANDS */
 	size_t baud_config_reg;
-	size_t protocol_regs[7U];   /* Size must be kept in sync with NUM_PROTOCOL_COMMANDS */
+	size_t protocol_regs[8U];   /* Size must be kept in sync with NUM_PROTOCOL_COMMANDS */
 	size_t timepulse_reg;
 	u32 min_baud;
 	u32 default_baud;
@@ -432,7 +434,8 @@ static int enable_zedf9_antenna_control(struct gnss_device *gdev, struct gnss_se
 }
 
 /* Set the default protocol defined in the driver data. */
-static int set_zedf9_gnss_protocol(struct gnss_device *gdev, struct gnss_serial *gserial, const enum gnss_output_protocol protocol) {
+static int set_zedf9_gnss_protocol(struct gnss_device *gdev,
+				   struct gnss_serial *gserial, const enum gnss_output_protocol protocol) {
 	const struct ubx_data *data = gnss_serial_get_drvdata(gserial);
 	const struct ubx_features *features = data->features;
 	size_t count = 0U;
@@ -442,7 +445,8 @@ static int set_zedf9_gnss_protocol(struct gnss_device *gdev, struct gnss_serial 
 		return ret;
 	count = gdev->ops->write_raw(gdev, ZED_F9_PROTOCOL_MSG, PROTOCOL_MSG_TOTAL_LEN);
 	if (count != PROTOCOL_MSG_TOTAL_LEN) {
-		dev_err(&gdev->dev, "Failed to set GNSS protocol to %s.\n", (UBX == protocol) ? "UBX" : "NMEA");
+	    dev_err(&gdev->dev, "Failed to set GNSS protocol to %s.\n", (UBX == protocol)
+		    ? "UBX" : "NMEA");
 		return EINVAL;
 	}
 	dev_info(&gdev->dev, "Set GNSS protocol to %s.\n", (UBX == protocol) ? "UBX" : "NMEA");
@@ -698,7 +702,6 @@ static const struct gnss_serial_ops ubx_gserial_ops = {
 	.set_power = ubx_set_power,
 };
 
-
 static const struct ubx_features __maybe_unused zedf9_feats = {
 	.open					=	zed_f9_serial_open,
 	/* ANT_CFG_VOLTCTRL, ANT_CFG_SHORTDET, ANT_CFG_OPENDET, ANT_CFG_PWRDOWN */
@@ -710,8 +713,8 @@ static const struct ubx_features __maybe_unused zedf9_feats = {
 						          0x20910007, 0x20910048,
 						/* CFG_MSGOUT_UBX_NAV_EOE_UART1, CFG_MSGOUT_UBX_RXM_RAWX_UART1, */
 							  0x20910160, 0x209102a5,
-						/* CFG_MSGOUT_UBX_RXM_SFRBX_UART1*/
-							  0x20910232},
+						/* CFG_MSGOUT_UBX_RXM_SFRBX_UART1, CFG_MSGOUT_UBX_MON_COMMS_UART1 */
+							  0x20910232, 0x20910350},
 	.timepulse_reg				=	0x2005000c,
 	.min_baud				=	9600,
 	.default_baud				=	38400,
