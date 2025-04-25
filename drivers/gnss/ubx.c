@@ -552,7 +552,7 @@ static int set_zedf9_gnss_protocol(struct gnss_device *gdev,
 }
 
 /* Configure PPS by selecting the time pulse reference. */
-static int zedf9_set_time_pulse_reference(struct gnss_device *gdev, struct gnss_serial* gserial) {
+static int set_zedf9_time_pulse_reference(struct gnss_device *gdev, struct gnss_serial* gserial) {
 	const struct ubx_data *data = gnss_serial_get_drvdata(gserial);
 	const struct ubx_features *features = data->features;
 	size_t count = 0U;
@@ -655,7 +655,7 @@ static int zed_f9_configure(struct gnss_device *gdev) {
 	ret = set_zedf9_gnss_protocol(gdev, gserial, protocol_to_set);
 	if (ret)
 		return ret;
-	ret = zedf9_set_time_pulse_reference(gdev, gserial);
+	ret = set_zedf9_time_pulse_reference(gdev, gserial);
 	if (ret)
 		return ret;
 	ret = set_zedf9_rate_meas(gdev, gserial);
@@ -830,7 +830,7 @@ static const struct ubx_features __maybe_unused zedf9_feats = {
 	.default_meas_period			=	200,
 	.min_meas_period			=	25,
 	.default_protocol     			=	UBX,
-	.default_time_reference		=	GPS,
+	.default_time_reference			=	GPS,
 };
 
 #ifdef CONFIG_OF
