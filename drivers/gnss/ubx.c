@@ -213,6 +213,19 @@ union int_to_bytes {
 	uint8_t bytes[4];
 };
 
+static const char * gnss_output_protocol_name(const enum gnss_output_protocol protocol) {
+	switch (protocol) {
+	case PROTOCOL_NONE:
+		return "None";
+	case UBX:
+		return "UBX";
+	case NMEA:
+		return "NMEA";
+	default:
+		return "Invalid";
+	}
+}
+
 /* Payload  length is contained in bytes 0-2 after message class and ID.
  *  While the checksum includes the Message class and ID plus message length, the
  *  payload does not.
@@ -307,8 +320,7 @@ static int prepare_zedf9_gnss_protocol_msg(const enum gnss_output_protocol proto
 
 	/* Enable messages to be sent each epoch. */
 	for (i = 2; i < (int) NUM_PROTOCOL_ENABLE_COMMANDS; i++) {
-		/* 5U = 4 bytes for the key (register) plus 1 byte for the boolean value */
-		offset = i * 5U;
+		offset = i * setting_len;
 		/* 1 for enable */
 		ZED_F9_PROTOCOL_MSG[FIRST_VALUE_BYTE + offset] = 1;
 		cfg_register.int_val = features->protocol_regs[i];
@@ -321,7 +333,7 @@ static int prepare_zedf9_gnss_protocol_msg(const enum gnss_output_protocol proto
 	   settings to disable must be at the end of the array. */
 	for (i = NUM_PROTOCOL_ENABLE_COMMANDS ;
 	     i < (int) (NUM_PROTOCOL_ENABLE_COMMANDS + NUM_PROTOCOL_DISABLE_COMMANDS); i++) {
-		offset = i * 5U;
+		offset = i * setting_len;
 		/* 0 for disable */
 		ZED_F9_PROTOCOL_MSG[FIRST_VALUE_BYTE + offset] = 0;
 		cfg_register.int_val = features->protocol_regs[i];
@@ -388,7 +400,7 @@ static int prepare_zedf9_baud_msg(const speed_t speed,
 
 	cfg_val.int_val = check_baud(speed, dev, features);
 	cfg_register.int_val = features->baud_config_reg;
-	for (i = 0; i < 4; i++) {
+	for (i = 0; i < ARRAY_SIZE(cfg_val.bytes); i++) {
 		ZED_F9_BAUD_MSG[FIRST_VALUE_BYTE + i] = cfg_val.bytes[i];
 		ZED_F9_BAUD_MSG[FIRST_CONFIG_REGISTER_BYTE + i] = cfg_register.bytes[i];
 	}
@@ -417,7 +429,7 @@ static int prepare_zedf9_rate_meas_msg(const uint32_t period,
 	cfg_val.int_val = (period >= features->min_meas_period) ? period :
 	    features->min_meas_period;
 	cfg_register.int_val = features->rate_meas_reg;
-	for (i = 0; i < 4; i++) {
+	for (i = 0; i < ARRAY_SIZE(cfg_val.bytes); i++) {
 		ZED_F9_BAUD_MSG[FIRST_VALUE_BYTE + i] = cfg_val.bytes[i];
 		ZED_F9_BAUD_MSG[FIRST_CONFIG_REGISTER_BYTE + i] = cfg_register.bytes[i];
 	}
@@ -444,7 +456,7 @@ static int prepare_zedf9_time_pulse_msg(const struct device *dev,
 		goto bad_msg;
 
 	cfg_register.int_val = features->timepulse_reg;
-	for (i = 0; i < 4; i++) {
+	for (i = 0; i < ARRAY_SIZE(cfg_register.bytes); i++) {
 		ZED_F9_PPS_MSG[FIRST_CONFIG_REGISTER_BYTE + i] = cfg_register.bytes[i];
 	}
 	ZED_F9_PPS_MSG[FIRST_VALUE_BYTE] = features->default_time_reference;
@@ -542,11 +554,10 @@ static int set_zedf9_gnss_protocol(struct gnss_device *gdev,
 		return ret;
 	count = gdev->ops->write_raw(gdev, ZED_F9_PROTOCOL_MSG, PROTOCOL_MSG_TOTAL_LEN);
 	if (count != PROTOCOL_MSG_TOTAL_LEN) {
-	    dev_err(&gdev->dev, "Failed to set GNSS protocol to %s.\n", (UBX == protocol)
-		    ? "UBX" : "NMEA");
+	    dev_err(&gdev->dev, "Failed to set GNSS protocol to %s.\n", gnss_output_protocol_name(protocol));
 		return EINVAL;
 	}
-	dev_info(&gdev->dev, "Set GNSS protocol to %s.\n", (UBX == protocol) ? "UBX" : "NMEA");
+	dev_info(&gdev->dev, "Set GNSS protocol to %s.\n", gnss_output_protocol_name(protocol));
 
 	return 0;
 }
