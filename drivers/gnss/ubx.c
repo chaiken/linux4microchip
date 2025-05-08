@@ -36,6 +36,7 @@ const size_t RATE_MEAS_FIRST_CHECKSUM_BYTE = 18U;
 const size_t ANT_FIRST_CHECKSUM_BYTE = 30U;
 const size_t PROTOCOL_FIRST_CHECKSUM_BYTE = 65U;
 const size_t PPS_FIRST_CHECKSUM_BYTE = 15U;
+const size_t MODEL_FIRST_CHECKSUM_BYTE = 15U;
 const size_t BAUD_MSG_TOTAL_LEN = 20U;
 const size_t RATE_MEAS_MSG_TOTAL_LEN = 20U;
 const size_t NUM_ANT_COMMANDS = 4U;
@@ -46,6 +47,7 @@ const size_t NUM_PROTOCOL_DISABLE_COMMANDS = 3U;
 const size_t ANT_MSG_TOTAL_LEN = 32U;
 const size_t PROTOCOL_MSG_TOTAL_LEN = 67U;
 const size_t PPS_MSG_TOTAL_LEN = 17U;
+const size_t MODEL_MSG_TOTAL_LEN = 17U;
 
 enum gnss_output_protocol {
 	PROTOCOL_NONE,
@@ -72,6 +74,37 @@ char *timepulse_reference_names[] = {
 };
 
 const size_t max_reference_name = ARRAY_SIZE(timepulse_reference_names) - 1U;
+
+/*
+ * enum value 1 and AIR3 are skipped.   See u-blox F9 LAP Interface description,
+ *  p. 173.
+ */
+enum dynamic_platform_model {
+	PORTABLE = 0,
+	STATIONARY = 2,
+	PEDESTRIAN,
+	AUTOMOTIVE,
+	SEA,
+	AIR1,   // Airborne with <1g acceleration
+	AIR2,   // Airborne with <2g acceleration
+	AIR4,   // Airborne with <4g acceleration
+	WRIST,  // Wrist worn watch.
+};
+
+const char * const dynamic_platform_model_names[] = {
+	"PORTABLE",
+	"STATIONARY",
+	"PEDESTRIAN",
+	"AUTOMOTIVE",
+	"SEA",
+	"AIR1",
+	"AIR2",
+	"AIR4",
+	"WRIST",
+};
+
+/* The last index == ARRAY_SIZE, but value 1 is illegal. */
+const size_t max_platform_model_name = ARRAY_SIZE(dynamic_platform_model_names);
 
 uint8_t ZED_F9_BAUD_MSG[] = {
 	0xB5, 0x62, /* 0-1 preamble */
@@ -177,6 +210,21 @@ uint8_t ZED_F9_PPS_MSG[] = {
 	0x00, 0x00 /* 15-16 Placeholder for checksum */
 };
 
+/*
+ * Select dynamic model AIR4 via CFG-NAVSPG-DYNMODEL KeyID 0x20110021.
+ */
+uint8_t ZED_F9_MODEL_MSG[] = {
+	0xB5, 0x62, /* 0-1 preamble */
+	0x06, 0x8A, /* 2-3 CFG_VALSET command */
+	0x09, 0x00, /* 4-5 payload length = 9 bytes = 4 + one key + enum value */
+	0x00, /* 6 U-Blox API version */
+	0x01, /* 7 Write to RAM */
+	0x00, 0x00, /* 8-9 Reserved */
+	0x00, 0x00, 0x00, 0x00, /* 10-13 Placeholder for register */
+	0x00, /* 14 Placeholder for enum value */
+	0x00, 0x00 /* 15-16 Placeholder for checksum */
+};
+
 struct ubx_features {
 	int (*open)(struct gnss_device *gdev);
 	size_t antenna_regs[4U];  /* Size must be kept in sync with NUM_ANT_COMMANDS */
@@ -186,6 +234,7 @@ struct ubx_features {
 	size_t protocol_regs[11U];
 	size_t timepulse_reg;
 	size_t rate_meas_reg;
+	size_t dynamic_model_reg;
 	u32 min_baud;
 	u32 default_baud;
 	u32 max_baud;
@@ -193,6 +242,7 @@ struct ubx_features {
 	u32 min_meas_period;
 	enum gnss_output_protocol default_protocol;
 	enum gnss_timepulse_reference default_time_reference;
+	enum dynamic_platform_model default_dynamic_model;
 };
 
 struct ubx_data {
@@ -470,6 +520,33 @@ static int prepare_zedf9_time_pulse_msg(const struct device *dev,
 	return -EINVAL;
 }
 
+static int prepare_zedf9_dynamic_model_msg(const struct device *dev,
+		const struct ubx_features *features)
+{
+	union int_to_bytes cfg_register;
+	int i = 0;
+	uint8_t checksum[2];
+	const size_t total_len = get_msg_total_len(ZED_F9_MODEL_MSG);
+
+	if (total_len != MODEL_MSG_TOTAL_LEN) {
+		dev_err(dev, "Malformed UBX dynamic-model message\n");
+		return -EINVAL;
+	}
+
+	cfg_register.int_val = features->dynamic_model_reg;
+	for (i = 0; i < ARRAY_SIZE(cfg_register.bytes); i++) {
+		ZED_F9_MODEL_MSG[FIRST_CONFIG_REGISTER_BYTE + i] = cfg_register.bytes[i];
+	}
+	ZED_F9_MODEL_MSG[FIRST_VALUE_BYTE] = features->default_dynamic_model;
+	calc_ubx_checksum(ZED_F9_MODEL_MSG, checksum, total_len);
+	ZED_F9_MODEL_MSG[MODEL_FIRST_CHECKSUM_BYTE] = checksum[0];
+	ZED_F9_MODEL_MSG[MODEL_FIRST_CHECKSUM_BYTE + 1U] = checksum[1];
+	return 0;
+
+ bad_msg:
+
+}
+
 /* Configure the Zed F9 baud rate via the UBX-CFG-VALSET message. */
 static int set_zedf9_baud(struct gnss_device *gdev,
 					struct serdev_device *serdev, struct gnss_serial *gserial)
@@ -585,6 +662,36 @@ static int set_zedf9_time_pulse_reference(struct gnss_device *gdev, struct gnss_
 	return 0;
 }
 
+static int set_zedf9_dynamic_model(struct gnss_device *gdev, struct gnss_serial* gserial) {
+	const struct ubx_data *data = gnss_serial_get_drvdata(gserial);
+	const struct ubx_features *features = data->features;
+	size_t count = 0U;
+	int ret;
+
+	if (!features)
+		return -EINVAL;
+	const size_t default_model = features->default_dynamic_model;
+	BUG_ON(max_platform_model_name < default_model);
+	/* The enum values dictated by U-Blox skip the value 1. */
+	BUG_ON(1 == default_model);
+
+	ret = prepare_zedf9_dynamic_model_msg(&gdev->dev, features);
+	if (ret)
+		return ret;
+	count = gdev->ops->write_raw(gdev, ZED_F9_MODEL_MSG, MODEL_MSG_TOTAL_LEN);
+	if (MODEL_MSG_TOTAL_LEN != count) {
+		dev_err(&gdev->dev, "Dynamic platform model setting failed.");
+		return count;
+	}
+	/* Code around the missing enum value. */
+	const char* dynamic_model_name = (default_model == 0) ?
+	    dynamic_platform_model_names[0] :
+		    dynamic_platform_model_names[(default_model - 1)];
+	dev_info(&gdev->dev, "Set dynamic platform model to %s.\n", dynamic_model_name);
+	return 0;
+}
+
+
 /*
  * Almost the same as gnss_serial_open() but does not set baud.
  * Leaves device closed on error.
@@ -670,6 +777,9 @@ static int zed_f9_configure(struct gnss_device *gdev) {
 	if (ret)
 		return ret;
 	ret = set_zedf9_rate_meas(gdev, gserial);
+	if (ret)
+		return ret;
+	ret = set_zedf9_dynamic_model(gdev, gserial);
 	if (ret)
 		return ret;
 
@@ -834,6 +944,7 @@ static const struct ubx_features __maybe_unused zedf9_feats = {
 							  0x1031000e},
 	.timepulse_reg				=	0x2005000c,
 	.rate_meas_reg				=	0x30210002,
+	.dynamic_model_reg			=	0x20110021,
 	.min_baud				=	9600,
 	.default_baud				=	38400,
 	.max_baud				=	921600,
@@ -842,6 +953,7 @@ static const struct ubx_features __maybe_unused zedf9_feats = {
 	.min_meas_period			=	25,
 	.default_protocol     			=	UBX,
 	.default_time_reference			=	GPS,
+	.default_dynamic_model			=	AIR4,
 };
 
 #ifdef CONFIG_OF
