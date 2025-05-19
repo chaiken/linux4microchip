@@ -542,9 +542,6 @@ static int prepare_zedf9_dynamic_model_msg(const struct device *dev,
 	ZED_F9_MODEL_MSG[MODEL_FIRST_CHECKSUM_BYTE] = checksum[0];
 	ZED_F9_MODEL_MSG[MODEL_FIRST_CHECKSUM_BYTE + 1U] = checksum[1];
 	return 0;
-
- bad_msg:
-
 }
 
 /* Configure the Zed F9 baud rate via the UBX-CFG-VALSET message. */
