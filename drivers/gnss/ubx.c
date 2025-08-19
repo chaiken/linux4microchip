@@ -34,18 +34,18 @@ const size_t FIRST_VALUE_BYTE = 14U;
 const size_t BAUD_FIRST_CHECKSUM_BYTE = 18U;
 const size_t RATE_MEAS_FIRST_CHECKSUM_BYTE = 18U;
 const size_t ANT_FIRST_CHECKSUM_BYTE = 30U;
-const size_t PROTOCOL_FIRST_CHECKSUM_BYTE = 65U;
+const size_t PROTOCOL_FIRST_CHECKSUM_BYTE = 75U;
 const size_t PPS_FIRST_CHECKSUM_BYTE = 15U;
 const size_t MODEL_FIRST_CHECKSUM_BYTE = 15U;
 const size_t BAUD_MSG_TOTAL_LEN = 20U;
 const size_t RATE_MEAS_MSG_TOTAL_LEN = 20U;
 const size_t NUM_ANT_COMMANDS = 4U;
 /* All configurations except BeiDou constellation */
-const size_t NUM_PROTOCOL_ENABLE_COMMANDS = 8U;
+const size_t NUM_PROTOCOL_ENABLE_COMMANDS = 10U;
 /* 3 BeiDou-constellation configurations */
 const size_t NUM_PROTOCOL_DISABLE_COMMANDS = 3U;
 const size_t ANT_MSG_TOTAL_LEN = 32U;
-const size_t PROTOCOL_MSG_TOTAL_LEN = 67U;
+const size_t PROTOCOL_MSG_TOTAL_LEN = 77U;
 const size_t PPS_MSG_TOTAL_LEN = 17U;
 const size_t MODEL_MSG_TOTAL_LEN = 17U;
 
@@ -155,9 +155,11 @@ uint8_t ZED_F9_ANTENNA_MSG[] = {
  *    UBX-NAV_PVT for receiver-generated fixes and associated metadata.
  *    UBX-NAV-TIMEGPS to get the correspondence between local and GPS time.
  *    UBX-NAV-EOE to completion of navigation epoch messages.
+ *    UBX-NAV-CLOCK to get the clock solution.
  *    UBX-RXM_RAWX to get raw measurements from each satellite.
  *    UBX-RXM-SFRBX to get raw satellite broadcast orbit data.
  *    UBX-MON-COMMS to get communication port statistics.
+ *    UBX-TIM-TP to get time pulse time data.
  *    CFG-SIGNAL-BDS_ENA to turn off BeiDou constellation.
  *    CFG-SIGNAL-BDS_B1_ENA to turn off another BeiDou constellation.
  *    CFG-SIGNAL-BDS_B2_ENA to turn off yet another BeiDou constellation.
@@ -165,7 +167,7 @@ uint8_t ZED_F9_ANTENNA_MSG[] = {
 uint8_t ZED_F9_PROTOCOL_MSG[] = {
 	0xB5, 0x62, /* 0-1 preamble */
 	0x06, 0x8A, /* 2-3 CFG_VALSET command */
-	0x3B, 0x00, /* 4-5 payload length = 4 + 11 * (4B key + 1B value) */
+	0x45, 0x00, /* 4-5 payload length = 4 + 13 * (4B key + 1B value) */
 	0x00, /* 6 U-Blox API version */
 	0x01, /* 7 Write to RAM */
 	0x00, 0x00, /* 8-9 Reserved */
@@ -192,7 +194,11 @@ uint8_t ZED_F9_PROTOCOL_MSG[] = {
 	0x00, /* 59 Placeholder for boolean value */
 	0x00, 0x00, 0x00, 0x00, /* 60-63 Placeholder for configuration register = key */
 	0x00, /* 64 Placeholder for boolean value */
-	0x00, 0x00 /* 65-66 Placeholder for checksum */
+	0x00, 0x00, 0x00, 0x00, /* 65-68 Placeholder for configuration register = key */
+	0x00, /* 69 Placeholder for boolean value */
+	0x00, 0x00, 0x00, 0x00, /* 70-73 Placeholder for configuration register = key */
+	0x00, /* 74 Placeholder for boolean value */
+	0x00, 0x00 /* 75-76 Placeholder for checksum */
 };
 
 /*
@@ -231,7 +237,7 @@ struct ubx_features {
 	size_t baud_config_reg;
 	/* Size must be kept in sync with NUM_PROTOCOL_ENABLE_COMMANDS +
 	   NUM_PROTOCOL_DISABLE_COMMANDS */
-	size_t protocol_regs[11U];
+	size_t protocol_regs[13U];
 	size_t timepulse_reg;
 	size_t rate_meas_reg;
 	size_t dynamic_model_reg;
@@ -929,12 +935,14 @@ static const struct ubx_features __maybe_unused zedf9_feats = {
 	/* The registers corresponding to settings to disable must be at the end of the
 	   array. */
 	.protocol_regs				=	{0x10740001, 0x10740002,
-						/* CFG_MSGOUT_UBX_NAV_PVT_UART1, CFG_MSGOUT_UBX_NAV_TIMEGPS_UART1, */
+						/* CFG-MSGOUT-UBX_NAV_PVT_UART1, CFG-MSGOUT-UBX_NAV_TIMEGPS_UART1, */
 						          0x20910007, 0x20910048,
-						/* CFG_MSGOUT_UBX_NAV_EOE_UART1, CFG_MSGOUT_UBX_RXM_RAWX_UART1, */
+						/* CFG-MSGOUT-UBX_NAV_EOE_UART1, CFG-MSGOUT-UBX_RXM_RAWX_UART1, */
 							  0x20910160, 0x209102a5,
-						/* CFG_MSGOUT_UBX_RXM_SFRBX_UART1, CFG_MSGOUT_UBX_MON_COMMS_UART1, */
+						/* CFG-MSGOUT-UBX_RXM_SFRBX_UART1, CFG-MSGOUT-UBX_MON_COMMS_UART1, */
 							  0x20910232, 0x20910350,
+						/* CFG-MSGOUT-UBX_NAV_CLOCK_UART1, CFG-MSGOUT-UBX_TIME_TP_UART1, */
+							  0x20910066, 0x2091017e,
 						/* CFG-SIGNAL-BDS_ENA, CFG-SIGNAL-BDS_B1_ENA, */
 							  0x10310022, 0x1031000d,
 						/* CFG-SIGNAL-BDS_B2_ENA */
