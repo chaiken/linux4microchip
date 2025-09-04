@@ -41,7 +41,7 @@ const size_t BAUD_MSG_TOTAL_LEN = 20U;
 const size_t RATE_MEAS_MSG_TOTAL_LEN = 20U;
 const size_t NUM_ANT_COMMANDS = 4U;
 /* All configurations except BeiDou constellation */
-const size_t NUM_PROTOCOL_ENABLE_COMMANDS = 10U;
+const size_t NUM_PROTOCOL_ENABLE_COMMANDS = 11U;
 /* 3 BeiDou-constellation configurations */
 const size_t NUM_PROTOCOL_DISABLE_COMMANDS = 3U;
 const size_t ANT_MSG_TOTAL_LEN = 32U;
@@ -237,7 +237,7 @@ struct ubx_features {
 	size_t baud_config_reg;
 	/* Size must be kept in sync with NUM_PROTOCOL_ENABLE_COMMANDS +
 	   NUM_PROTOCOL_DISABLE_COMMANDS */
-	size_t protocol_regs[13U];
+	size_t protocol_regs[14U];
 	size_t timepulse_reg;
 	size_t rate_meas_reg;
 	size_t dynamic_model_reg;
@@ -931,22 +931,24 @@ static const struct ubx_features __maybe_unused zedf9_feats = {
 	/* ANT_CFG_VOLTCTRL, ANT_CFG_SHORTDET, ANT_CFG_OPENDET, ANT_CFG_PWRDOWN */
 	.antenna_regs				=	{0x10a3002e, 0x10a3002f, 0x10a30031, 0x10a30033},
 	.baud_config_reg			=	0x40520001,
-						/* CFG_UART1OUTPROT_UBX, CFG_UART1OUTPROT_NMEA, */
 	/* The registers corresponding to settings to disable must be at the end of the
 	   array. */
 	.protocol_regs				=	{0x10740001, 0x10740002,
-						/* CFG-MSGOUT-UBX_NAV_PVT_UART1, CFG-MSGOUT-UBX_NAV_TIMEGPS_UART1, */
+						/* CFG_UART1OUTPROT_UBX, CFG_UART1OUTPROT_NMEA, */
 						          0x20910007, 0x20910048,
-						/* CFG-MSGOUT-UBX_NAV_EOE_UART1, CFG-MSGOUT-UBX_RXM_RAWX_UART1, */
+						/* CFG-MSGOUT-UBX_NAV_PVT_UART1, CFG-MSGOUT-UBX_NAV_TIMEGPS_UART1, */
 							  0x20910160, 0x209102a5,
-						/* CFG-MSGOUT-UBX_RXM_SFRBX_UART1, CFG-MSGOUT-UBX_MON_COMMS_UART1, */
+						/* CFG-MSGOUT-UBX_NAV_EOE_UART1, CFG-MSGOUT-UBX_RXM_RAWX_UART1, */
 							  0x20910232, 0x20910350,
-						/* CFG-MSGOUT-UBX_NAV_CLOCK_UART1, CFG-MSGOUT-UBX_TIME_TP_UART1, */
+						/* CFG-MSGOUT-UBX_RXM_SFRBX_UART1, CFG-MSGOUT-UBX_MON_COMMS_UART1, */
 							  0x20910066, 0x2091017e,
-						/* CFG-SIGNAL-BDS_ENA, CFG-SIGNAL-BDS_B1_ENA, */
+						/* CFG-MSGOUT-UBX_NAV_CLOCK_UART1, CFG-MSGOUT-UBX_TIME_TP_UART1, */
+							  0x2091035a,
+						/* CFG-MSGOUT-UBX_MON_RF_UART1, */
 							  0x10310022, 0x1031000d,
-						/* CFG-SIGNAL-BDS_B2_ENA */
+						/* CFG-SIGNAL-BDS_ENA, CFG-SIGNAL-BDS_B1_ENA, */
 							  0x1031000e},
+						/* CFG-SIGNAL-BDS_B2_ENA */
 	.timepulse_reg				=	0x2005000c,
 	.rate_meas_reg				=	0x30210002,
 	.dynamic_model_reg			=	0x20110021,
