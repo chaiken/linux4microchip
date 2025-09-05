@@ -933,22 +933,22 @@ static const struct ubx_features __maybe_unused zedf9_feats = {
 	.baud_config_reg			=	0x40520001,
 	/* The registers corresponding to settings to disable must be at the end of the
 	   array. */
-	.protocol_regs				=	{0x10740001, 0x10740002,
-						/* CFG_UART1OUTPROT_UBX, CFG_UART1OUTPROT_NMEA, */
-						          0x20910007, 0x20910048,
-						/* CFG-MSGOUT-UBX_NAV_PVT_UART1, CFG-MSGOUT-UBX_NAV_TIMEGPS_UART1, */
-							  0x20910160, 0x209102a5,
-						/* CFG-MSGOUT-UBX_NAV_EOE_UART1, CFG-MSGOUT-UBX_RXM_RAWX_UART1, */
-							  0x20910232, 0x20910350,
-						/* CFG-MSGOUT-UBX_RXM_SFRBX_UART1, CFG-MSGOUT-UBX_MON_COMMS_UART1, */
-							  0x20910066, 0x2091017e,
-						/* CFG-MSGOUT-UBX_NAV_CLOCK_UART1, CFG-MSGOUT-UBX_TIME_TP_UART1, */
-							  0x2091035a,
-						/* CFG-MSGOUT-UBX_MON_RF_UART1, */
-							  0x10310022, 0x1031000d,
-						/* CFG-SIGNAL-BDS_ENA, CFG-SIGNAL-BDS_B1_ENA, */
-							  0x1031000e},
-						/* CFG-SIGNAL-BDS_B2_ENA */
+	.protocol_regs				=	{
+							0x10740001, /* CFG_UART1OUTPROT_UBX */
+							0x10740002, /* CFG_UART1OUTPROT_NMEA */
+							0x20910007, /* CFG-MSGOUT-UBX_NAV_PVT_UART1 */
+							0x20910048, /* CFG-MSGOUT-UBX_NAV_TIMEGPS_UART1 */
+							0x20910160, /* CFG-MSGOUT-UBX_NAV_EOE_UART1 */
+							0x209102a5, /* CFG-MSGOUT-UBX_RXM_RAWX_UART1 */
+							0x20910232, /* CFG-MSGOUT-UBX_RXM_SFRBX_UART1 */
+							0x20910350, /* CFG-MSGOUT-UBX_MON_COMMS_UART1 */
+							0x20910066, /* CFG-MSGOUT-UBX_NAV_CLOCK_UART1 */
+							0x2091017e, /* CFG-MSGOUT-UBX_TIME_TP_UART1, */
+							0x2091035a, /* CFG-MSGOUT-UBX_MON_RF_UART1 */
+							0x10310022, /* CFG-SIGNAL-BDS_ENA */
+							0x1031000d, /* CFG-SIGNAL-BDS_B1_ENA */
+							0x1031000e, /* CFG-SIGNAL-BDS_B2_ENA */
+							},
 	.timepulse_reg				=	0x2005000c,
 	.rate_meas_reg				=	0x30210002,
 	.dynamic_model_reg			=	0x20110021,
