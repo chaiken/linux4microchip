@@ -34,7 +34,7 @@ const size_t FIRST_VALUE_BYTE = 14U;
 const size_t BAUD_FIRST_CHECKSUM_BYTE = 18U;
 const size_t RATE_MEAS_FIRST_CHECKSUM_BYTE = 18U;
 const size_t ANT_FIRST_CHECKSUM_BYTE = 30U;
-const size_t PROTOCOL_FIRST_CHECKSUM_BYTE = 75U;
+const size_t PROTOCOL_FIRST_CHECKSUM_BYTE = 80U;
 const size_t PPS_FIRST_CHECKSUM_BYTE = 15U;
 const size_t MODEL_FIRST_CHECKSUM_BYTE = 15U;
 const size_t BAUD_MSG_TOTAL_LEN = 20U;
@@ -45,7 +45,7 @@ const size_t NUM_PROTOCOL_ENABLE_COMMANDS = 11U;
 /* 3 BeiDou-constellation configurations */
 const size_t NUM_PROTOCOL_DISABLE_COMMANDS = 3U;
 const size_t ANT_MSG_TOTAL_LEN = 32U;
-const size_t PROTOCOL_MSG_TOTAL_LEN = 77U;
+const size_t PROTOCOL_MSG_TOTAL_LEN = 82U;
 const size_t PPS_MSG_TOTAL_LEN = 17U;
 const size_t MODEL_MSG_TOTAL_LEN = 17U;
 
@@ -159,7 +159,9 @@ uint8_t ZED_F9_ANTENNA_MSG[] = {
  *    UBX-RXM_RAWX to get raw measurements from each satellite.
  *    UBX-RXM-SFRBX to get raw satellite broadcast orbit data.
  *    UBX-MON-COMMS to get communication port statistics.
+ *    UBX-NAV-CLOCK to get the clock solution.
  *    UBX-TIM-TP to get time pulse time data.
+ *    UBX-MON-RF to get RF port status.
  *    CFG-SIGNAL-BDS_ENA to turn off BeiDou constellation.
  *    CFG-SIGNAL-BDS_B1_ENA to turn off another BeiDou constellation.
  *    CFG-SIGNAL-BDS_B2_ENA to turn off yet another BeiDou constellation.
@@ -167,7 +169,7 @@ uint8_t ZED_F9_ANTENNA_MSG[] = {
 uint8_t ZED_F9_PROTOCOL_MSG[] = {
 	0xB5, 0x62, /* 0-1 preamble */
 	0x06, 0x8A, /* 2-3 CFG_VALSET command */
-	0x45, 0x00, /* 4-5 payload length = 4 + 13 * (4B key + 1B value) */
+	0x4A, 0x00, /* 4-5 payload length = 4 + 14 * (4B key + 1B value) */
 	0x00, /* 6 U-Blox API version */
 	0x01, /* 7 Write to RAM */
 	0x00, 0x00, /* 8-9 Reserved */
@@ -198,7 +200,9 @@ uint8_t ZED_F9_PROTOCOL_MSG[] = {
 	0x00, /* 69 Placeholder for boolean value */
 	0x00, 0x00, 0x00, 0x00, /* 70-73 Placeholder for configuration register = key */
 	0x00, /* 74 Placeholder for boolean value */
-	0x00, 0x00 /* 75-76 Placeholder for checksum */
+	0x00, 0x00, 0x00, 0x00, /* 75-78 Placeholder for configuration register = key */
+	0x00, /* 79 Placeholder for boolean value */
+	0x00, 0x00 /* 80-81 Placeholder for checksum */
 };
 
 /*
