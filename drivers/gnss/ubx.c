@@ -29,25 +29,30 @@ const size_t PREAMBLE_LEN = 2;
 const size_t MESSAGE_CLASS_LEN = 2;
 const size_t MESSAGE_LENGTH_LEN = 2;
 const size_t CHECKSUM_LEN = 2;
-const size_t FIRST_CONFIG_REGISTER_BYTE = 10U;
-const size_t FIRST_VALUE_BYTE = 14U;
-const size_t BAUD_FIRST_CHECKSUM_BYTE = 18U;
-const size_t RATE_MEAS_FIRST_CHECKSUM_BYTE = 18U;
-const size_t ANT_FIRST_CHECKSUM_BYTE = 30U;
-const size_t PROTOCOL_FIRST_CHECKSUM_BYTE = 80U;
-const size_t PPS_FIRST_CHECKSUM_BYTE = 15U;
-const size_t MODEL_FIRST_CHECKSUM_BYTE = 15U;
-const size_t BAUD_MSG_TOTAL_LEN = 20U;
-const size_t RATE_MEAS_MSG_TOTAL_LEN = 20U;
-const size_t NUM_ANT_COMMANDS = 4U;
+/* API version, RAM-based configuration and reserved bytes */
+const size_t RESERVED_LEN = 4;
+const size_t INVARIANTS_LEN = PREAMBLE_LEN + MESSAGE_CLASS_LEN + MESSAGE_LENGTH_LEN + CHECKSUM_LEN + RESERVED_LEN;
+const size_t FIRST_CONFIG_REGISTER_BYTE = INVARIANTS_LEN - CHECKSUM_LEN;
+/* 4B is the register length. */
+const size_t FIRST_VALUE_BYTE = FIRST_CONFIG_REGISTER_BYTE + 4;
+/* 4B for register and 1B for the value */
+const size_t SINGLE_BYTE_SETTING_LEN = 5;
+/* 4B for register and 4B for the value */
+const size_t INTEGER_VAL_SETTING_LEN = 8;
+
 /* All configurations except BeiDou constellation */
-const size_t NUM_PROTOCOL_ENABLE_COMMANDS = 11U;
+const size_t NUM_PROTOCOL_ENABLE_COMMANDS = 11;
 /* 3 BeiDou-constellation configurations */
-const size_t NUM_PROTOCOL_DISABLE_COMMANDS = 3U;
-const size_t ANT_MSG_TOTAL_LEN = 32U;
-const size_t PROTOCOL_MSG_TOTAL_LEN = 82U;
-const size_t PPS_MSG_TOTAL_LEN = 17U;
-const size_t MODEL_MSG_TOTAL_LEN = 17U;
+const size_t NUM_PROTOCOL_DISABLE_COMMANDS = 3;
+const size_t PROTOCOL_MSG_TOTAL_LEN = ((NUM_PROTOCOL_ENABLE_COMMANDS +
+					NUM_PROTOCOL_DISABLE_COMMANDS) * SINGLE_BYTE_SETTING_LEN) + INVARIANTS_LEN;
+const size_t NUM_ANT_COMMANDS = 4;
+const size_t ANT_MSG_TOTAL_LEN = INVARIANTS_LEN + (NUM_ANT_COMMANDS * SINGLE_BYTE_SETTING_LEN);
+const size_t PPS_MSG_TOTAL_LEN = INVARIANTS_LEN + SINGLE_BYTE_SETTING_LEN;
+const size_t MODEL_MSG_TOTAL_LEN = INVARIANTS_LEN + SINGLE_BYTE_SETTING_LEN;
+const size_t BAUD_MSG_TOTAL_LEN = INVARIANTS_LEN + INTEGER_VAL_SETTING_LEN;
+const size_t RATE_MEAS_MSG_TOTAL_LEN = INVARIANTS_LEN + INTEGER_VAL_SETTING_LEN;;
+
 
 enum gnss_output_protocol {
 	PROTOCOL_NONE,
@@ -403,8 +408,8 @@ static int prepare_zedf9_gnss_protocol_msg(const enum gnss_output_protocol proto
 		}
 	}
 	calc_ubx_checksum(ZED_F9_PROTOCOL_MSG, checksum, total_len);
-	ZED_F9_PROTOCOL_MSG[PROTOCOL_FIRST_CHECKSUM_BYTE] = checksum[0];
-	ZED_F9_PROTOCOL_MSG[PROTOCOL_FIRST_CHECKSUM_BYTE + 1U] = checksum[1];
+	ZED_F9_PROTOCOL_MSG[PROTOCOL_MSG_TOTAL_LEN - 2] = checksum[0];
+	ZED_F9_PROTOCOL_MSG[PROTOCOL_MSG_TOTAL_LEN - 1] = checksum[1];
 	return 0;
 }
 
@@ -437,8 +442,8 @@ static int prepare_zedf9_antenna_msg(const bool state,
 		}
 	}
 	calc_ubx_checksum(ZED_F9_ANTENNA_MSG, checksum, total_len);
-	ZED_F9_ANTENNA_MSG[ANT_FIRST_CHECKSUM_BYTE] = checksum[0];
-	ZED_F9_ANTENNA_MSG[ANT_FIRST_CHECKSUM_BYTE + 1U] = checksum[1];
+	ZED_F9_ANTENNA_MSG[ANT_MSG_TOTAL_LEN - 2] = checksum[0];
+	ZED_F9_ANTENNA_MSG[ANT_MSG_TOTAL_LEN - 1] = checksum[1];
 	return 0;
 
  bad_msg:
@@ -465,8 +470,8 @@ static int prepare_zedf9_baud_msg(const speed_t speed,
 		ZED_F9_BAUD_MSG[FIRST_CONFIG_REGISTER_BYTE + i] = cfg_register.bytes[i];
 	}
 	calc_ubx_checksum(ZED_F9_BAUD_MSG, checksum, total_len);
-	ZED_F9_BAUD_MSG[BAUD_FIRST_CHECKSUM_BYTE] = checksum[0];
-	ZED_F9_BAUD_MSG[BAUD_FIRST_CHECKSUM_BYTE + 1U] = checksum[1];
+	ZED_F9_BAUD_MSG[BAUD_MSG_TOTAL_LEN - 2] = checksum[0];
+	ZED_F9_BAUD_MSG[BAUD_MSG_TOTAL_LEN - 1] = checksum[1];
 	return 0;
 
  bad_msg:
@@ -494,8 +499,8 @@ static int prepare_zedf9_rate_meas_msg(const uint32_t period,
 		ZED_F9_BAUD_MSG[FIRST_CONFIG_REGISTER_BYTE + i] = cfg_register.bytes[i];
 	}
 	calc_ubx_checksum(ZED_F9_RATE_MEAS_MSG, checksum, total_len);
-	ZED_F9_RATE_MEAS_MSG[BAUD_FIRST_CHECKSUM_BYTE] = checksum[0];
-	ZED_F9_RATE_MEAS_MSG[BAUD_FIRST_CHECKSUM_BYTE + 1U] = checksum[1];
+	ZED_F9_RATE_MEAS_MSG[BAUD_MSG_TOTAL_LEN - 2] = checksum[0];
+	ZED_F9_RATE_MEAS_MSG[BAUD_MSG_TOTAL_LEN - 1] = checksum[1];
 	return 0;
 
  bad_msg:
@@ -521,8 +526,8 @@ static int prepare_zedf9_time_pulse_msg(const struct device *dev,
 	}
 	ZED_F9_PPS_MSG[FIRST_VALUE_BYTE] = features->default_time_reference;
 	calc_ubx_checksum(ZED_F9_PPS_MSG, checksum, total_len);
-	ZED_F9_PPS_MSG[PPS_FIRST_CHECKSUM_BYTE] = checksum[0];
-	ZED_F9_PPS_MSG[PPS_FIRST_CHECKSUM_BYTE + 1U] = checksum[1];
+	ZED_F9_PPS_MSG[PPS_MSG_TOTAL_LEN - 2] = checksum[0];
+	ZED_F9_PPS_MSG[PPS_MSG_TOTAL_LEN - 1] = checksum[1];
 	return 0;
 
  bad_msg:
@@ -549,8 +554,8 @@ static int prepare_zedf9_dynamic_model_msg(const struct device *dev,
 	}
 	ZED_F9_MODEL_MSG[FIRST_VALUE_BYTE] = features->default_dynamic_model;
 	calc_ubx_checksum(ZED_F9_MODEL_MSG, checksum, total_len);
-	ZED_F9_MODEL_MSG[MODEL_FIRST_CHECKSUM_BYTE] = checksum[0];
-	ZED_F9_MODEL_MSG[MODEL_FIRST_CHECKSUM_BYTE + 1U] = checksum[1];
+	ZED_F9_MODEL_MSG[MODEL_MSG_TOTAL_LEN - 2] = checksum[0];
+	ZED_F9_MODEL_MSG[MODEL_MSG_TOTAL_LEN - 1] = checksum[1];
 	return 0;
 }
 
