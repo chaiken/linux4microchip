@@ -495,12 +495,12 @@ static int prepare_zedf9_rate_meas_msg(const uint32_t period,
 	    features->min_meas_period;
 	cfg_register.int_val = features->rate_meas_reg;
 	for (i = 0; i < ARRAY_SIZE(cfg_val.bytes); i++) {
-		ZED_F9_BAUD_MSG[FIRST_VALUE_BYTE + i] = cfg_val.bytes[i];
-		ZED_F9_BAUD_MSG[FIRST_CONFIG_REGISTER_BYTE + i] = cfg_register.bytes[i];
+		ZED_F9_RATE_MEAS_MSG[FIRST_VALUE_BYTE + i] = cfg_val.bytes[i];
+		ZED_F9_RATE_MEAS_MSG[FIRST_CONFIG_REGISTER_BYTE + i] = cfg_register.bytes[i];
 	}
 	calc_ubx_checksum(ZED_F9_RATE_MEAS_MSG, checksum, total_len);
-	ZED_F9_RATE_MEAS_MSG[BAUD_MSG_TOTAL_LEN - 2] = checksum[0];
-	ZED_F9_RATE_MEAS_MSG[BAUD_MSG_TOTAL_LEN - 1] = checksum[1];
+	ZED_F9_RATE_MEAS_MSG[RATE_MEAS_MSG_TOTAL_LEN - 2] = checksum[0];
+	ZED_F9_RATE_MEAS_MSG[RATE_MEAS_MSG_TOTAL_LEN - 1] = checksum[1];
 	return 0;
 
  bad_msg:
