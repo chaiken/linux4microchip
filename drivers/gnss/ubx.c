@@ -22,9 +22,7 @@
 #include "core.h"
 #include "serial.h"
 
-/* Total configuration message length = PREAMBLE_LEN + MESSAGE_CLASS_LEN +
- *   MESSAGE_LENGTH_LEN + payload length + CHECKSUM_LEN
- */
+/* Total configuration message length = INVARIANTS_LEN + payload length */
 const size_t PREAMBLE_LEN = 2;
 const size_t MESSAGE_CLASS_LEN = 2;
 const size_t MESSAGE_LENGTH_LEN = 2;
@@ -42,8 +40,8 @@ const size_t INTEGER_VAL_SETTING_LEN = 8;
 
 /* All configurations except BeiDou constellation */
 const size_t NUM_PROTOCOL_ENABLE_COMMANDS = 11;
-/* 3 BeiDou-constellation configurations */
-const size_t NUM_PROTOCOL_DISABLE_COMMANDS = 3;
+/* 3 BeiDou-constellation configurations plus automotive dead-reckoning */
+const size_t NUM_PROTOCOL_DISABLE_COMMANDS = 4;
 const size_t PROTOCOL_MSG_TOTAL_LEN = INVARIANTS_LEN + ((NUM_PROTOCOL_ENABLE_COMMANDS +
 					NUM_PROTOCOL_DISABLE_COMMANDS) * SINGLE_BYTE_SETTING_LEN);
 const size_t NUM_ANT_COMMANDS = 4;
@@ -170,11 +168,12 @@ uint8_t ZED_F9_ANTENNA_MSG[] = {
  *    CFG-SIGNAL-BDS_ENA to turn off BeiDou constellation.
  *    CFG-SIGNAL-BDS_B1_ENA to turn off another BeiDou constellation.
  *    CFG-SIGNAL-BDS_B2_ENA to turn off yet another BeiDou constellation.
+ *    CFG-SFCORE-USE_SF to turn off automotive dead reckoning.
  */
 uint8_t ZED_F9_PROTOCOL_MSG[] = {
 	0xB5, 0x62, /* 0-1 preamble */
 	0x06, 0x8A, /* 2-3 CFG_VALSET command */
-	0x4A, 0x00, /* 4-5 payload length = 4 + 14 * (4B key + 1B value) */
+	0x4F, 0x00, /* 4-5 payload length = 4 + 15 * (4B key + 1B value) */
 	0x00, /* 6 U-Blox API version */
 	0x01, /* 7 Write to RAM */
 	0x00, 0x00, /* 8-9 Reserved */
@@ -207,7 +206,9 @@ uint8_t ZED_F9_PROTOCOL_MSG[] = {
 	0x00, /* 74 Placeholder for boolean value */
 	0x00, 0x00, 0x00, 0x00, /* 75-78 Placeholder for configuration register = key */
 	0x00, /* 79 Placeholder for boolean value */
-	0x00, 0x00 /* 80-81 Placeholder for checksum */
+	0x00, 0x00, 0x00, 0x00, /* 80-83 Placeholder for configuration register = key */
+	0x00, /* 84 Placeholder for boolean value */
+	0x00, 0x00 /* 85-86 Placeholder for checksum */
 };
 
 /*
@@ -246,7 +247,7 @@ struct ubx_features {
 	size_t baud_config_reg;
 	/* Size must be kept in sync with NUM_PROTOCOL_ENABLE_COMMANDS +
 	   NUM_PROTOCOL_DISABLE_COMMANDS */
-	size_t protocol_regs[14U];
+	size_t protocol_regs[15U];
 	size_t timepulse_reg;
 	size_t rate_meas_reg;
 	size_t dynamic_model_reg;
@@ -292,8 +293,8 @@ static const char * gnss_output_protocol_name(const enum gnss_output_protocol pr
 }
 
 /* Payload  length is contained in bytes 0-2 after message class and ID.
- *  While the checksum includes the Message class and ID plus message length, the
- *  payload does not.
+ * While the checksum includes the Message class and ID plus message length, the
+ * payload does not.
  */
 static uint16_t get_payload_length(const uint8_t msg[])
 {
@@ -394,8 +395,11 @@ static int prepare_zedf9_gnss_protocol_msg(const enum gnss_output_protocol proto
 				= cfg_register.bytes[j];
 		}
 	}
-	/* Disable BeiDou satellite message processing. The registers corresponding to
-	   settings to disable must be at the end of the array. */
+	/*
+	 * Disable BeiDou satellite message processing and Automotive Dead Reckoning.
+	 * The registers corresponding to disabled settings must be at the end of the
+	 * array.
+	 */
 	for (i = NUM_PROTOCOL_ENABLE_COMMANDS ;
 	     i < (int) (NUM_PROTOCOL_ENABLE_COMMANDS + NUM_PROTOCOL_DISABLE_COMMANDS); i++) {
 		offset = i * setting_len;
@@ -957,6 +961,7 @@ static const struct ubx_features __maybe_unused zedf9_feats = {
 							0x10310022, /* CFG-SIGNAL-BDS_ENA */
 							0x1031000d, /* CFG-SIGNAL-BDS_B1_ENA */
 							0x1031000e, /* CFG-SIGNAL-BDS_B2_ENA */
+							0x10080001, /* CFG-SFCORE-USE_SF */
 							},
 	.timepulse_reg				=	0x2005000c,
 	.rate_meas_reg				=	0x30210002,
