@@ -40,10 +40,13 @@ const size_t SHORT_VAL_SETTING_LEN = 6;
 /* 4B for register and 4B for the value */
 const size_t INTEGER_VAL_SETTING_LEN = 8;
 
-/* One of UBX or NMEA, plus 5 message-output-enablement commands */
-const size_t NUM_PROTOCOL_ENABLE_COMMANDS = 7;
+/*
+ * 4 settings to turn choose between NMEA and UBX protocol for each of UART1 and
+ * I2C, plus 7 message-output-enablement commands.
+ */
+const size_t NUM_PROTOCOL_ENABLE_COMMANDS = 10;
 /* Disable 3 BeiDou-constellation configurations plus automotive dead-reckoning. */
-const size_t NUM_PROTOCOL_DISABLE_COMMANDS = 4;
+const size_t NUM_PROTOCOL_DISABLE_COMMANDS = 5;
 const size_t PROTOCOL_MSG_TOTAL_LEN = INVARIANTS_LEN + ((NUM_PROTOCOL_ENABLE_COMMANDS +
 					NUM_PROTOCOL_DISABLE_COMMANDS) * SINGLE_BYTE_SETTING_LEN);
 const size_t NUM_SEND_PERIOD_MSGS = 5;
@@ -145,16 +148,20 @@ uint8_t ZED_F9_ANTENNA_MSG[] = {
 };
 
 /*
- * First two settings:
- *    Disable the NMEA output protocol (default).
- *    Enable UBX output protocol.
+ * First 3 settings:
+ *    CFG-UART1OUTPROT-NMEA to disable the NMEA output protocol (default) on UART1.
+ *    CFG-UART1OUTPROT-UBX to enable UBX output protocol on UART1.
+ *    CFG-I2COUTPROT-UBX to enable the NMEA output protocol (default) on I2C.
  * Request these messages be sent once every second:
- *    UBX-RXM_RAWX to get raw measurements from each satellite.
- *    UBX-RXM-SFRBX to get raw satellite broadcast orbit data.
- *    UBX-MON-COMMS to get communication port statistics.
- *    UBX-TIM-TP to get time pulse time data.
- *    UBX-MON-RF to get RF port status.
+ *    UBX-RXM_RAWX to output raw measurements from each satellite to UART1.
+ *    UBX-RXM-SFRBX to output raw satellite broadcast orbit data to UART1.
+ *    UBX-MON-COMMS to output communication port statistics to UART1.
+ *    UBX-TIM-TP to output time pulse data to UART1.
+ *    UBX-TIM-TP to output time pulse data to I2C.
+ *    UBX-MON-RF to output RF port status to UART1.
+ *    UBX-MON-RF to output RF port status to I2C.
  * Disable these messages altogether:
+ *    CFG-I2COUTPROT-NMEA to disable the NMEA output protocol (default) on I2C.
  *    CFG-SIGNAL-BDS_ENA to turn off BeiDou constellation.
  *    CFG-SIGNAL-BDS_B1_ENA to turn off another BeiDou constellation.
  *    CFG-SIGNAL-BDS_B2_ENA to turn off yet another BeiDou constellation.
@@ -163,11 +170,10 @@ uint8_t ZED_F9_ANTENNA_MSG[] = {
 uint8_t ZED_F9_PROTOCOL_MSG[] = {
 	0xB5, 0x62, /* 0-1 preamble */
 	0x06, 0x8A, /* 2-3 CFG_VALSET command */
-	0x3B, 0x00, /* 4-5 payload length = 4 + 11 * (4B key + 1B value) */
+	0x4F, 0x00, /* 4-5 payload length = 4 + 15 * (4B key + 1B value) */
 	0x00, /* 6 U-Blox API version */
 	0x01, /* 7 Write to RAM */
 	0x00, 0x00, /* 8-9 Reserved */
-
 	0x00, 0x00, 0x00, 0x00, /* 10-13 Placeholder for configuration register = key */
 	0x00, /* 14 Placeholder for boolean value */
 	0x00, 0x00, 0x00, 0x00, /* 15-18 Placeholder for configuration register = key */
@@ -190,7 +196,15 @@ uint8_t ZED_F9_PROTOCOL_MSG[] = {
 	0x00, /* 59 Placeholder for boolean value */
 	0x00, 0x00, 0x00, 0x00, /* 60-63 Placeholder for configuration register = key */
 	0x00, /* 64 Placeholder for boolean value */
-	0x00, 0x00 /* 65-66 Placeholder for checksum */
+	0x00, 0x00, 0x00, 0x00, /* 65-68 Placeholder for configuration register = key */
+	0x00, /* 69 Placeholder for boolean value */
+	0x00, 0x00, 0x00, 0x00, /* 70-73 Placeholder for configuration register = key */
+	0x00, /* 74 Placeholder for boolean value */
+	0x00, 0x00, 0x00, 0x00, /* 75-78 Placeholder for configuration register = key */
+	0x00, /* 79 Placeholder for boolean value */
+	0x00, 0x00, 0x00, 0x00, /* 80-83 Placeholder for configuration register = key */
+	0x00, /* 84 Placeholder for boolean value */
+	0x00, 0x00 /* 90-91 Placeholder for checksum */
 };
 
 /*
@@ -273,7 +287,7 @@ struct ubx_features {
 	size_t baud_config_reg;
 	/* Size must be kept in sync with NUM_PROTOCOL_ENABLE_COMMANDS +
 	   NUM_PROTOCOL_DISABLE_COMMANDS */
-	size_t protocol_regs[11U];
+	size_t protocol_regs[15U];
 	size_t timepulse_reg;
 	size_t generation_period_reg;
 	size_t send_period_regs[4U];
@@ -399,7 +413,7 @@ static int prepare_zedf9_gnss_protocol_msg(const enum gnss_output_protocol proto
 		dev_info(dev, "Selecting NMEA output protocol.\n");
 	}
 
-	/* Enable one output protocol and disable the other. */
+	/* Enable one output protocol and disable the other for UART1. */
 	ZED_F9_PROTOCOL_MSG[FIRST_VALUE_BYTE] = protocol_is_ubx;
 	ZED_F9_PROTOCOL_MSG[FIRST_VALUE_BYTE + setting_len] = !protocol_is_ubx;
 	ubx_register.int_val = features->protocol_regs[0];
@@ -411,7 +425,10 @@ static int prepare_zedf9_gnss_protocol_msg(const enum gnss_output_protocol proto
 			= nmea_register.bytes[i];
 	}
 
-	/* Enable messages to be sent each epoch. */
+	/*
+	 * Enable messages which should be sent each epoch. Includes enabling UBX
+	 * protocol on I2C.
+	 */
 	for (i = 2; i < (int) NUM_PROTOCOL_ENABLE_COMMANDS; i++) {
 		offset = i * setting_len;
 		/* 1 for enable */
@@ -424,6 +441,7 @@ static int prepare_zedf9_gnss_protocol_msg(const enum gnss_output_protocol proto
 	}
 	/*
 	 * Disable BeiDou satellite message processing and Automotive Dead Reckoning.
+         * Also disable NMEA protocol on I2C.
 	 * The registers corresponding to disabled settings must be at the end of the
 	 * array.
 	 */
@@ -1054,11 +1072,15 @@ static const struct ubx_features __maybe_unused zedf9_feats = {
 	.protocol_regs				=	{
 							0x10740001, /* CFG_UART1OUTPROT_UBX */
 							0x10740002, /* CFG_UART1OUTPROT_NMEA */
+							0x10720001, /* CFG_I2COUTPROT_UBX -- enable */
 							0x209102a5, /* CFG-MSGOUT-UBX_RXM_RAWX_UART1 */
 							0x20910232, /* CFG-MSGOUT-UBX_RXM_SFRBX_UART1 */
 							0x20910350, /* CFG-MSGOUT-UBX_MON_COMMS_UART1 */
 							0x2091017e, /* CFG-MSGOUT-UBX_TIM_TP_UART1, */
+							0x2091017d, /* CFG-MSGOUT-UBX_TIM_TP_I2C, */
 							0x2091035a, /* CFG-MSGOUT-UBX_MON_RF_UART1 */
+							0x20910359, /* CFG-MSGOUT-UBX_MON_RF_I2C */
+							0x10720002, /* CFG_I2COUTPROT_NMEA -- disable */
 							0x10310022, /* CFG-SIGNAL-BDS_ENA */
 							0x1031000d, /* CFG-SIGNAL-BDS_B1_ENA */
 							0x1031000e, /* CFG-SIGNAL-BDS_B2_ENA */
