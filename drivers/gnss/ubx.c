@@ -219,7 +219,7 @@ uint8_t ZED_F9_GENERATION_PERIOD_MSG[] = {
 	0x00, 0x00, /* 8-9 Reserved */
 	/* 10-13 Placeholder for configuration register = key */
 	0x00, 0x00, 0x00, 0x00,
-	/* 14-15 Placeholder for measurement generation period value */
+	/* 14-15 Placeholder for uint16_t measurement generation period value */
 	0x00, 0x00,
 	0x00, 0x00 /* 16-17 Placeholder for checksum */
 };
@@ -240,13 +240,13 @@ uint8_t ZED_F9_SEND_PERIOD_MSG[] = {
 	0x01, /* 7 Write to RAM */
 	0x00, 0x00, /* 8-9 Reserved */
 	0x00, 0x00, 0x00, 0x00, /* 10-13 Placeholder for configuration register = key */
-	0x00, /* 14 Placeholder for boolean value */
+	0x00, /* 14 Placeholder for byte value */
 	0x00, 0x00, 0x00, 0x00, /* 15-18 Placeholder for configuration register = key */
-	0x00, /* 19 Placeholder for boolean value */
+	0x00, /* 19 Placeholder for byte value */
 	0x00, 0x00, 0x00, 0x00, /* 20-23 Placeholder for configuration register = key */
-	0x00, /* 24 Placeholder for boolean value */
+	0x00, /* 24 Placeholder for byte value */
 	0x00, 0x00, 0x00, 0x00, /* 25-28 Placeholder for configuration register = key */
-	0x00, /* 29 Placeholder for boolean value */
+	0x00, /* 29 Placeholder for byte value */
 	0x00, 0x00 /* 30-31 Placeholder for checksum */
 };
 
@@ -295,8 +295,8 @@ struct ubx_features {
 	u32 min_baud;
 	u32 default_baud;
 	u32 max_baud;
-	u32 default_meas_period;
-	u32 min_meas_period;
+	u16 default_meas_period;
+	u16 min_meas_period;
 	enum gnss_output_protocol default_protocol;
 	enum gnss_timepulse_reference default_time_reference;
 	enum dynamic_platform_model default_dynamic_model;
@@ -530,7 +530,7 @@ static int prepare_zedf9_baud_msg(const speed_t speed,
 
 /*
  * Set the message-send period to a message every epoch.  The message-generation
- *  period configured below affects the length of the epoch.
+ * period configured below affects the length of the epoch.
  */
 static int prepare_zedf9_send_period_msg(const struct device *dev, const struct
 				       ubx_features *features)
