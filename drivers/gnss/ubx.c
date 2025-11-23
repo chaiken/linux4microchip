@@ -5,6 +5,7 @@
  * Copyright (C) 2018 Johan Hovold <johan@kernel.org>
  */
 
+#include <linux/cleanup.h>
 #include <linux/errno.h>
 #include <linux/gnss.h>
 #include <linux/gpio/consumer.h>
@@ -21,6 +22,8 @@
 
 #include "core.h"
 #include "serial.h"
+
+DEFINE_FREE(free_serial, struct gnss_serial *, if (_T) gnss_serial_free(_T))
 
 /* Total configuration message length = INVARIANTS_LEN + payload length */
 const size_t PREAMBLE_LEN = 2;
@@ -1123,14 +1126,13 @@ MODULE_DEVICE_TABLE(of, ubx_of_match);
 
 static int ubx_probe(struct serdev_device *serdev)
 {
-	struct gnss_serial *gserial;
 	struct gpio_desc *reset;
 	struct ubx_data *data;
 	struct gnss_operations *ubx_gnss_ops;
 	struct gnss_device *gdev;
 	int ret;
 
-	gserial = gnss_serial_allocate(serdev, sizeof(*data));
+	struct gnss_serial *gserial __free(free_serial) = gnss_serial_allocate(serdev, sizeof(*data));
 	if (IS_ERR(gserial)) {
 		ret = PTR_ERR(gserial);
 		return ret;
@@ -1162,24 +1164,26 @@ static int ubx_probe(struct serdev_device *serdev)
 #endif
 	data->vcc = devm_regulator_get(&serdev->dev, "vcc");
 	if (IS_ERR(data->vcc)) {
-		ret = PTR_ERR(data->vcc);
-		goto err_free_gserial;
+		return PTR_ERR(data->vcc);
 	}
 
 	ret = devm_regulator_get_enable_optional(&serdev->dev, "v-bckp");
 	if (ret < 0 && ret != -ENODEV)
-		goto err_free_gserial;
+		return ret;
 
 	/* Deassert reset */
 	reset = devm_gpiod_get_optional(&serdev->dev, "reset", GPIOD_OUT_LOW);
 	if (IS_ERR(reset)) {
-		ret = PTR_ERR(reset);
-		goto err_free_gserial;
+		return PTR_ERR(reset);
 	}
 
-	ret = gnss_serial_register(gserial);
+	/* Ownership of gserial is transferred to the GNSS subsystem by passing
+	 * no_free_ptr(gserial) to gnss_serial_register(). After this point,
+	 * gserial will not be automatically freed in this function.
+	 */
+	ret = gnss_serial_register(no_free_ptr(gserial));
 	if (ret)
-		goto err_free_gserial;
+		return ret;
 
 #if IS_ENABLED(CONFIG_OF)
 	{
@@ -1202,11 +1206,6 @@ static int ubx_probe(struct serdev_device *serdev)
 	_do_serial_close(serdev);
 
 	return 0;
-
-err_free_gserial:
-	gnss_serial_free(gserial);
-
-	return ret;
 }
 
 /* TODO: free the sysfs GNSS protocol attribute if it exists? */
