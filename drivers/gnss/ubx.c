@@ -862,7 +862,7 @@ static int zed_f9_configure(struct gnss_device *gdev) {
 
 	if (!data) {
 		dev_err(&gdev->dev, "Lookup of driver data failed.\n");
-		return ret;
+		return -ENODATA;
 	}
 	if (data->is_configured)
 		return 0;
@@ -991,7 +991,7 @@ close:
 	put_device(&gdev->dev);
 	return ret;
 }
-static DEVICE_ATTR_WO(protocol);
+static __maybe_unused DEVICE_ATTR_WO(protocol);
 
 /* Opens the serial device, not the GNSS. */
 static int zed_f9_serial_open(struct gnss_device *gdev)
