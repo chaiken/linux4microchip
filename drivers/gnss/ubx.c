@@ -1208,11 +1208,12 @@ static int ubx_probe(struct serdev_device *serdev)
 	return 0;
 }
 
-/* TODO: free the sysfs GNSS protocol attribute if it exists? */
 static void ubx_remove(struct serdev_device *serdev)
 {
 	struct gnss_serial *gserial = serdev_device_get_drvdata(serdev);
-
+#if IS_ENABLED(CONFIG_OF)
+	device_remove_file(&gserial->gdev->dev, &dev_attr_protocol);
+#endif
 	gnss_serial_deregister(gserial);
 	gnss_serial_free(gserial);
 }
